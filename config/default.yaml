@@ -1,0 +1,174 @@
+# GlassBox RAG Default Configuration
+# This file demonstrates all available configuration options
+
+# Server Configuration
+server:
+  host: "0.0.0.0"
+  port: 8000
+  debug: false
+  workers: 4
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "json"  # json or text
+
+# Trace & Observability
+trace:
+  enabled: true
+  backend: "memory"  # memory, redis, or postgresql
+  retention_days: 30
+  sample_rate: 1.0  # 0.0 to 1.0
+
+# Modular Encoding Layer
+encoding:
+  # Default encoder (can be overridden per query)
+  default_encoder: "openai"
+  
+  # Local Encoders
+  local:
+    onnx:
+      model_path: "models/embeddings/all-MiniLM-L6-v2"
+      device: "cpu"  # cpu or cuda
+      batch_size: 32
+    
+    ollama:
+      base_url: "http://localhost:11434"
+      model: "nomic-embed-text"
+      embedding_dim: 384
+  
+  # Cloud Encoders
+  cloud:
+    openai:
+      api_key: "${OPENAI_API_KEY}"
+      model: "text-embedding-3-small"
+      embedding_dim: 1536
+    
+    # Add more cloud providers as needed
+
+# Vector Store Configuration
+vector_store:
+  type: "qdrant"  # qdrant, chroma, or pgvector
+  
+  qdrant:
+    host: "localhost"
+    port: 6333
+    collection_name: "glassbox_docs"
+    vector_size: 384
+    distance_metric: "cosine"
+  
+  # Alternative: Chroma
+  # chroma:
+  #   path: "./data/chroma"
+  #   collection_name: "glassbox_docs"
+
+# Database Configuration
+database:
+  type: "postgresql"  # postgresql, mysql, sqlite, or mongodb
+  
+  postgresql:
+    host: "localhost"
+    port: 5432
+    database: "glassbox_db"
+    user: "glassbox"
+    password: "${DB_PASSWORD}"
+  
+  # Alternative: SQLite (for local development)
+  # sqlite:
+  #   path: "./data/glassbox.db"
+
+# Retrieval Configuration
+retrieval:
+  # Adaptive Retrieval Strategy
+  adaptive:
+    enabled: true
+    strategies:
+      - name: "semantic"
+        threshold: 0.7
+      - name: "keyword"
+        threshold: 0.5
+      - name: "hybrid"
+        weight_semantic: 0.6
+        weight_keyword: 0.4
+  
+  # Result configuration
+  top_k: 5
+  min_score: 0.3
+  rerank_enabled: false  # Cross-encoder reranking
+
+# Multimodal Configuration
+multimodal:
+  enabled: true
+  types:
+    - "text"
+    - "image"
+    - "pdf"
+  
+  image:
+    encoder: "openai"  # or "local"
+    max_size_mb: 10
+  
+  pdf:
+    extract_images: true
+    extract_text: true
+    max_pages: 100
+
+# Write-Back Configuration
+writeback:
+  enabled: true
+  mode: "protected"  # read-only, protected, or full
+  
+  protected:
+    confidence_threshold: 0.8  # Only write if confidence > 80%
+    human_review: false  # Require human approval
+    review_url: null  # URL for human review interface
+
+# Cost & Metrics Tracking
+metrics:
+  enabled: true
+  track_tokens: true
+  track_latency: true
+  track_cost: true
+  
+  # Cost per operation (in USD)
+  costs:
+    embedding_1k_tokens: 0.00002
+    llm_1k_tokens: 0.001
+
+# Security & Authentication
+security:
+  api_key_required: false
+  # api_keys:
+  #   - "sk-test-key-123"
+  
+  cors:
+    enabled: true
+    origins:
+      - "http://localhost:3000"
+      - "http://localhost:8000"
+
+# Plugin Registry
+plugins:
+  # Vector Store Plugins
+  vector_stores:
+    - module: "glassbox_rag.plugins.vector_stores.qdrant"
+      class: "QdrantVectorStore"
+  
+  # Embedder Plugins
+  embedders:
+    - module: "glassbox_rag.plugins.embedders.openai"
+      class: "OpenAIEmbedder"
+    - module: "glassbox_rag.plugins.embedders.onnx"
+      class: "ONNXEmbedder"
+    - module: "glassbox_rag.plugins.embedders.ollama"
+      class: "OllamaEmbedder"
+  
+  # Database Plugins
+  databases:
+    - module: "glassbox_rag.plugins.databases.postgresql"
+      class: "PostgreSQLDatabase"
+
+# Development Settings
+dev:
+  reload: true
+  trace_all_requests: true

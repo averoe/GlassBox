@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GlassBox RAG - Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .status {
+            display: inline-block;
+            background: #10b981;
+            color: white;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .trace-list {
+            list-style: none;
+        }
+        
+        .trace-item {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .trace-item:hover {
+            background: #e9ecef;
+            transform: translateX(4px);
+        }
+        
+        .trace-id {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #667eea;
+            font-weight: 500;
+        }
+        
+        .trace-time {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        
+        .metric {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 4px;
+        }
+        
+        .metric-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+            margin-top: 5px;
+        }
+        
+        .trace-detail {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            display: none;
+        }
+        
+        .trace-detail.active {
+            display: block;
+        }
+        
+        .trace-timeline {
+            margin-top: 20px;
+        }
+        
+        .timeline-item {
+            display: flex;
+            margin-bottom: 20px;
+            position: relative;
+        }
+        
+        .timeline-item:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            left: 15px;
+            top: 40px;
+            width: 2px;
+            height: calc(100% + 20px);
+            background: #e9ecef;
+        }
+        
+        .timeline-marker {
+            width: 32px;
+            height: 32px;
+            background: #667eea;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 14px;
+            font-weight: bold;
+            flex-shrink: 0;
+            margin-right: 15px;
+        }
+        
+        .timeline-content {
+            flex: 1;
+        }
+        
+        .step-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .step-time {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        
+        button:hover {
+            background: #5568d3;
+        }
+        
+        .back-btn {
+            margin-bottom: 15px;
+            display: inline-block;
+            background: #e9ecef;
+            color: #333;
+        }
+        
+        .back-btn:hover {
+            background: #dee2e6;
+        }
+        
+        @media (max-width: 768px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔍 GlassBox RAG Dashboard</h1>
+            <span class="status">● Running</span>
+        </header>
+        
+        <div class="main-grid" id="mainView">
+            <div class="card">
+                <h2>📊 Recent Traces</h2>
+                <ul class="trace-list" id="traceList">
+                    <li class="trace-item" onclick="selectTrace('trace-123')">
+                        <div class="trace-id">trace-123abc456</div>
+                        <div class="trace-time">2 seconds ago</div>
+                    </li>
+                    <li class="trace-item" onclick="selectTrace('trace-456')">
+                        <div class="trace-id">trace-456def789</div>
+                        <div class="trace-time">5 seconds ago</div>
+                    </li>
+                </ul>
+            </div>
+            
+            <div class="card">
+                <h2>📈 Metrics</h2>
+                <div class="metrics-grid">
+                    <div class="metric">
+                        <div class="metric-label">Total Requests</div>
+                        <div class="metric-value">1,234</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Avg Latency</div>
+                        <div class="metric-value">245ms</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Total Cost</div>
+                        <div class="metric-value">$12.45</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Success Rate</div>
+                        <div class="metric-value">99.8%</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="trace-detail" id="traceDetail">
+            <button class="back-btn" onclick="backToMain()">← Back</button>
+            <h2 id="traceTitle">Trace Details</h2>
+            <div class="trace-timeline" id="traceTimeline">
+                <!-- Timeline will be populated by JavaScript -->
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function selectTrace(traceId) {
+            document.getElementById('mainView').style.display = 'none';
+            document.getElementById('traceDetail').classList.add('active');
+            
+            // Mock trace data
+            const traces = {
+                'trace-123': {
+                    id: 'trace-123abc456',
+                    steps: [
+                        { name: 'retrieve', time: '45ms' },
+                        { name: 'encode_query', time: '23ms' },
+                        { name: 'adaptive_retrieve', time: '18ms' },
+                    ]
+                },
+                'trace-456': {
+                    id: 'trace-456def789',
+                    steps: [
+                        { name: 'ingest', time: '156ms' },
+                        { name: 'encode_documents', time: '120ms' },
+                    ]
+                }
+            };
+            
+            const trace = traces[traceId];
+            document.getElementById('traceTitle').textContent = `Trace ${trace.id}`;
+            
+            let timeline = '';
+            trace.steps.forEach((step, idx) => {
+                timeline += `
+                    <div class="timeline-item">
+                        <div class="timeline-marker">${idx + 1}</div>
+                        <div class="timeline-content">
+                            <div class="step-name">${step.name}</div>
+                            <div class="step-time">${step.time}</div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            document.getElementById('traceTimeline').innerHTML = timeline;
+        }
+        
+        function backToMain() {
+            document.getElementById('mainView').style.display = 'grid';
+            document.getElementById('traceDetail').classList.remove('active');
+        }
+    </script>
+</body>
+</html>
