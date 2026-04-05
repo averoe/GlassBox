@@ -1,18 +1,31 @@
-# GlassBox
+# GlassBox RAG
 
-An open-source, high-transparency modular RAG (Retrieval-Augmented Generation) framework for AI/ML applications.
+A production-ready, high-transparency modular RAG (Retrieval-Augmented Generation) framework designed for enterprise AI/ML applications. GlassBox provides comprehensive observability, extensibility, and performance monitoring capabilities.
 
 ## Features
 
-- Modular architecture with pluggable components
-- Support for multiple vector stores (Qdrant, Chroma)
-- Multiple embedding providers (OpenAI, Ollama, ONNX)
-- Database support (PostgreSQL, SQLite)
-- Comprehensive tracing and monitoring
-- FastAPI-based REST API
-- Web dashboard for trace visualization
-- Async/await support with asyncio
-- Pydantic v2 for robust configuration management
+### Core Capabilities
+- **Modular Architecture**: Pluggable components for encoders, vector stores, databases, and multimodal processors
+- **Multiple Vector Stores**: Support for Qdrant, Chroma, FAISS, Pinecone, Weaviate, and custom implementations
+- **Embedding Providers**: OpenAI, Ollama, ONNX, Hugging Face, Cohere, Google, and custom embedders
+- **Database Integration**: PostgreSQL, SQLite, MongoDB, MySQL, and Supabase compatibility
+- **Multimodal Processing**: Support for text, images, audio, and video content
+- **Advanced Chunking**: Recursive, sentence-based, and fixed-size chunking with overlap
+
+### Production Features
+- **Comprehensive Monitoring**: Real-time metrics, latency tracking, and cost analysis
+- **Rate Limiting**: Built-in rate limiting middleware for API protection
+- **Tracing & Debugging**: Detailed execution traces with visual debugging interface
+- **Health Monitoring**: System health checks and component status tracking
+- **Async/Await Support**: Full asyncio implementation for high performance
+- **Type Safety**: Complete type hints with mypy validation
+
+### Developer Experience
+- **Web Dashboard**: Multi-page interface for monitoring, debugging, and pipeline visualization
+- **Plugin System**: Extensible architecture with comprehensive documentation
+- **Configuration Management**: Pydantic v2-based configuration with environment variable support
+- **REST API**: FastAPI-based endpoints with automatic OpenAPI documentation
+- **Testing Framework**: Comprehensive test suite with high coverage
 
 ## Installation
 
@@ -22,127 +35,325 @@ Install from PyPI:
 pip install glassbox-rag
 ```
 
+Or install from source:
+
+```bash
+git clone https://github.com/averoe/GlassBox.git
+cd glassbox-rag
+pip install -e .
+```
+
 ## Quick Start
 
 ```python
-from glassbox_rag.core.engine import GlassBoxEngine
-from glassbox_rag.config import GlassBoxConfig
+from glassbox_rag import GlassBoxEngine, GlassBoxConfig, Document
 
-# Initialize the engine
+# Initialize with configuration
 config = GlassBoxConfig()
 engine = GlassBoxEngine(config)
 
-# Ingest documents
+# Prepare documents
 documents = [
-    {"content": "Document 1", "metadata": {"source": "source1"}},
-    {"content": "Document 2", "metadata": {"source": "source2"}},
+    Document(content="Your document content here", metadata={"source": "example"}),
+    Document(content="Another document", metadata={"source": "example2"})
 ]
-engine.ingest(documents)
 
-# Retrieve relevant documents
-results = engine.retrieve("query text", top_k=5)
+# Ingest documents
+await engine.ingest(documents)
+
+# Retrieve relevant information
+results = await engine.retrieve("your query", top_k=5)
+for result in results:
+    print(f"Content: {result.content}")
+    print(f"Score: {result.score}")
+    print(f"Metadata: {result.metadata}")
 ```
 
 ## Configuration
 
-Configure via YAML file (config/default.yaml):
+GlassBox uses YAML-based configuration with environment variable substitution:
 
 ```yaml
 server:
   host: "0.0.0.0"
   port: 8000
+  rate_limit: 100  # requests per minute
 
 vector_store:
   type: "qdrant"
   config:
     url: "http://localhost:6333"
+    collection_name: "glassbox_docs"
 
 encoder:
   type: "openai"
   config:
     api_key: "${OPENAI_API_KEY}"
     model: "text-embedding-3-small"
+    dimensions: 1536
 
 database:
   type: "postgresql"
   config:
-    url: "postgresql://user:password@localhost/glassbox"
+    url: "${DATABASE_URL}"
+    connection_pool_size: 10
+
+chunking:
+  strategy: "recursive"
+  chunk_size: 1000
+  chunk_overlap: 200
+
+multimodal:
+  enabled: true
+  processors:
+    - type: "image"
+      config:
+        model: "clip-vit-base-patch32"
+
+tracing:
+  enabled: true
+  storage: "database"
+  retention_days: 30
 ```
 
 ## API Endpoints
 
-- GET /health - Health check
-- POST /retrieve - Retrieve documents
-- POST /ingest - Ingest new documents
-- POST /update - Update existing documents
-- GET /traces/{id} - Get execution trace
-- GET /traces/{id}/visualize - Visualize trace
+### Core Operations
+- `GET /health` - System health check with component status
+- `POST /retrieve` - Retrieve relevant documents for a query
+- `POST /ingest` - Ingest new documents into the system
+- `POST /update` - Update existing documents with writeback protection
+- `DELETE /documents/{doc_id}` - Remove documents from the system
+
+### Monitoring & Debugging
+- `GET /metrics/prometheus` - Prometheus-compatible metrics export
+- `GET /traces` - List execution traces with filtering
+- `GET /traces/{trace_id}` - Get detailed trace information
+- `GET /traces/{trace_id}/export` - Export trace data as JSON
+
+### Dashboard
+- `GET /` - Web dashboard interface
+- `GET /api/dashboard/overview` - Dashboard overview data
+- `GET /api/dashboard/telemetry` - Telemetry and performance data
 
 ## Running the Server
 
-Start the FastAPI server with Uvicorn:
+Start the FastAPI server:
 
 ```bash
+# Using the module
 python -m glassbox_rag
+
+# Or with uvicorn directly
+uvicorn glassbox_rag.server:app --host 0.0.0.0 --port 8000
 ```
 
-The server will be available at http://localhost:8000
+The server will be available at `http://localhost:8000` with automatic API documentation at `http://localhost:8000/docs`.
 
 ## Web Dashboard
 
-Access the web dashboard at http://localhost:8000/ to:
+Access the comprehensive web dashboard at `http://localhost:8000` featuring:
 
-- View recent execution traces
-- Visualize trace hierarchy and timing
-- Monitor system metrics
-- Track token usage and costs
+### Overview Page
+- Real-time system metrics and health status
+- Component status monitoring
+- Recent activity feed
+- Key performance indicators
 
-## Testing
+### Pipeline Visualization
+- Interactive SVG pipeline diagram
+- Step-by-step execution flow
+- Real-time execution testing
+- Performance metrics per pipeline stage
 
-Run the test suite:
+### Debugger Interface
+- Execution trace listing with filtering
+- Detailed trace visualization
+- Step-by-step timing breakdown
+- Trace export functionality
 
-```bash
-pytest tests/ -v
-```
+### Telemetry Dashboard
+- Performance charts (latency, throughput)
+- Cost breakdown by service
+- Token usage analytics
+- Performance percentile tracking
+
+### Plugin Development
+- Interactive documentation for all plugin types
+- Code examples and configuration guides
+- Extensibility patterns and best practices
 
 ## Plugin Architecture
 
-Extend GlassBox with custom plugins:
+GlassBox supports four main plugin types:
 
-1. Create a plugin class inheriting from the appropriate base class
-2. Implement required abstract methods
-3. Register in the configuration
-
-Example custom embedder:
+### 1. Encoder Plugins
+Create custom embedding providers:
 
 ```python
-from glassbox_rag.plugins.base import EmbedderBase
+from glassbox_rag.plugins.base import BaseEncoder
+import numpy as np
 
-class CustomEmbedder(EmbedderBase):
-    def encode(self, texts):
+class CustomEncoder(BaseEncoder):
+    async def encode(self, texts: List[str]) -> np.ndarray:
         # Your embedding implementation
-        return embeddings
+        embeddings = await self.compute_embeddings(texts)
+        return np.array(embeddings)
+
+    async def encode_query(self, query: str) -> np.ndarray:
+        return await self.encode([query])
+```
+
+### 2. Vector Store Plugins
+Implement custom vector storage backends:
+
+```python
+from glassbox_rag.plugins.base import VectorStorePlugin
+
+class CustomVectorStore(VectorStorePlugin):
+    async def add_vectors(self, vectors: np.ndarray, metadata: List[dict]) -> List[str]:
+        # Store vectors and return IDs
+        ids = await self.store_vectors(vectors, metadata)
+        return ids
+
+    async def search(self, query_vector: np.ndarray, top_k: int) -> List[RetrievalResult]:
+        # Search and return results
+        results = await self.perform_search(query_vector, top_k)
+        return results
+```
+
+### 3. Database Plugins
+Create custom document storage backends:
+
+```python
+from glassbox_rag.plugins.base import DatabasePlugin
+
+class CustomDatabase(DatabasePlugin):
+    async def store_document(self, doc_id: str, content: str, metadata: dict):
+        # Store document
+        await self.insert_document(doc_id, content, metadata)
+
+    async def get_document(self, doc_id: str) -> Optional[dict]:
+        # Retrieve document
+        return await self.fetch_document(doc_id)
+```
+
+### 4. Multimodal Plugins
+Process different content types:
+
+```python
+from glassbox_rag.plugins.base import BaseMultimodalProcessor
+
+class ImageProcessor(BaseMultimodalProcessor):
+    async def process(self, content: MultimodalContent) -> List[str]:
+        # Extract text from images
+        texts = await self.extract_text_from_image(content.content)
+        return texts
+```
+
+## Testing
+
+Run the comprehensive test suite:
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run with coverage
+pytest tests/ --cov=glassbox_rag --cov-report=html
+
+# Run specific test categories
+pytest tests/unit/ -v      # Unit tests
+pytest tests/integration/ -v  # Integration tests
 ```
 
 ## Architecture
 
 GlassBox consists of several core components:
 
-- Engine: Orchestrates all operations
-- Encoder: Handles document and query encoding
-- Retriever: Implements retrieval strategies
-- Writeback: Manages document updates with protection
-- Metrics: Tracks token usage and costs
-- Trace: Records execution traces for debugging
+- **Engine**: Orchestrates all RAG operations and coordinates components
+- **Encoder**: Handles text and multimodal content encoding to vectors
+- **Retriever**: Implements retrieval strategies and reranking
+- **Database**: Manages document storage and metadata
+- **Vector Store**: Handles vector storage and similarity search
+- **Metrics Tracker**: Monitors performance, costs, and usage
+- **Trace System**: Records execution traces for debugging and analysis
+- **Writeback Manager**: Handles document updates with conflict resolution
+- **Text Processor**: Implements advanced chunking and preprocessing
+
+## Production Deployment
+
+### Docker Deployment
+```bash
+# Build the image
+docker build -t glassbox-rag .
+
+# Run with configuration
+docker run -p 8000:8000 \
+  -v $(pwd)/config:/app/config \
+  -e OPENAI_API_KEY=your_key \
+  glassbox-rag
+```
+
+### Docker Compose
+```yaml
+version: '3.8'
+services:
+  glassbox:
+    image: glassbox-rag
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/app/config
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+    depends_on:
+      - qdrant
+      - postgres
+
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=glassbox
+      - POSTGRES_USER=glassbox
+      - POSTGRES_PASSWORD=password
+```
+
+## Monitoring & Observability
+
+GlassBox provides comprehensive monitoring capabilities:
+
+- **Prometheus Metrics**: Export metrics in Prometheus format
+- **Health Checks**: Component-level health monitoring
+- **Tracing**: Detailed execution traces with timing
+- **Cost Tracking**: Token usage and API cost monitoring
+- **Performance Metrics**: Latency percentiles and throughput
+
+## Contributing
+
+We welcome contributions! Please:
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request
+
+See CONTRIBUTING.md for detailed guidelines.
 
 ## License
 
 Licensed under the Apache License 2.0. See LICENSE file for details.
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit pull requests.
-
 ## Support
 
-For issues, questions, or suggestions, please open an issue on GitHub.
+For issues, questions, or suggestions:
+- Open an issue on GitHub
+- Check the documentation at https://glassbox-rag.readthedocs.io/
+- Join our community discussions

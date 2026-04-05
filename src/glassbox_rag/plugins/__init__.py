@@ -1,6 +1,9 @@
-"""Plugin system base classes."""
+"""Plugin base classes and vector store / database implementations."""
 
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from glassbox_rag.plugins.base import Plugin, VectorStorePlugin, DatabasePlugin
 
-__all__ = ["base"]
+__all__ = [
+    "Plugin",
+    "VectorStorePlugin",
+    "DatabasePlugin",
+]

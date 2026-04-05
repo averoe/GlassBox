@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GlassBox RAG — Pipeline Dashboard</title>
+  <meta name="description" content="GlassBox RAG framework pipeline visualization, trace debugger, and telemetry dashboard">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <!-- Top Navigation -->
+  <nav class="topbar">
+    <div class="topbar-logo">
+      <i data-lucide="box" class="icon"></i>
+      <span>GlassBox RAG</span>
+    </div>
+    <div class="topbar-nav">
+      <button class="nav-btn active" data-page="overview">
+        <i data-lucide="layout-dashboard"></i>
+        Overview
+      </button>
+      <button class="nav-btn" data-page="pipeline">
+        <i data-lucide="git-branch"></i>
+        Pipeline
+      </button>
+      <button class="nav-btn" data-page="debugger">
+        <i data-lucide="bug"></i>
+        Debugger
+      </button>
+      <button class="nav-btn" data-page="telemetry">
+        <i data-lucide="bar-chart-3"></i>
+        Telemetry
+      </button>
+      <button class="nav-btn" data-page="plugins">
+        <i data-lucide="plug"></i>
+        Plugins
+      </button>
+    </div>
+    <div class="topbar-right">
+      <div class="status-indicator" id="healthStatus">
+        <div class="status-dot healthy"></div>
+        <span>Healthy</span>
+      </div>
+      <button class="btn-secondary" id="refreshBtn">
+        <i data-lucide="refresh-cw"></i>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="main">
+    <!-- Overview Page -->
+    <div id="overview" class="page active">
+      <div class="page-header">
+        <h1>System Overview</h1>
+        <p>Real-time status of your GlassBox RAG pipeline</p>
+      </div>
+
+      <!-- Metrics Grid -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-icon">
+            <i data-lucide="zap"></i>
+          </div>
+          <div class="metric-content">
+            <div class="metric-value" id="totalRequests">0</div>
+            <div class="metric-label">Total Requests</div>
+            <div class="metric-trend" id="requestsTrend">+0%</div>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-icon">
+            <i data-lucide="clock"></i>
+          </div>
+          <div class="metric-content">
+            <div class="metric-value" id="avgLatency">0ms</div>
+            <div class="metric-label">Avg Latency</div>
+            <div class="metric-trend" id="latencyTrend">+0%</div>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-icon">
+            <i data-lucide="database"></i>
+          </div>
+          <div class="metric-content">
+            <div class="metric-value" id="totalTokens">0</div>
+            <div class="metric-label">Tokens Used</div>
+            <div class="metric-trend" id="tokensTrend">+0%</div>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-icon">
+            <i data-lucide="dollar-sign"></i>
+          </div>
+          <div class="metric-content">
+            <div class="metric-value" id="totalCost">$0.00</div>
+            <div class="metric-label">Total Cost</div>
+            <div class="metric-trend" id="costTrend">+0%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Component Status -->
+      <div class="status-grid">
+        <div class="status-card">
+          <h3>Components</h3>
+          <div class="component-list" id="componentStatus">
+            <!-- Status items will be populated by JS -->
+          </div>
+        </div>
+
+        <div class="status-card">
+          <h3>Recent Activity</h3>
+          <div class="activity-feed" id="activityFeed">
+            <!-- Activity items will be populated by JS -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pipeline Page -->
+    <div id="pipeline" class="page">
+      <div class="page-header">
+        <h1>Pipeline Visualization</h1>
+        <p>Interactive view of your RAG pipeline execution flow</p>
+      </div>
+
+      <div class="pipeline-container">
+        <svg id="pipelineSvg" class="pipeline-svg" viewBox="0 0 1200 600">
+          <!-- Pipeline nodes and connections will be rendered here -->
+        </svg>
+
+        <div class="pipeline-controls">
+          <button class="btn-primary" id="runPipelineBtn">
+            <i data-lucide="play"></i>
+            Run Test Query
+          </button>
+          <button class="btn-secondary" id="resetPipelineBtn">
+            <i data-lucide="rotate-cw"></i>
+            Reset
+          </button>
+        </div>
+      </div>
+
+      <!-- Pipeline Details -->
+      <div class="pipeline-details">
+        <div class="detail-panel">
+          <h3>Step Details</h3>
+          <div id="stepDetails">
+            <p class="placeholder">Click on a pipeline step to view details</p>
+          </div>
+        </div>
+
+        <div class="detail-panel">
+          <h3>Execution Timeline</h3>
+          <div id="executionTimeline">
+            <p class="placeholder">Run a query to see execution timeline</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Debugger Page -->
+    <div id="debugger" class="page">
+      <div class="page-header">
+        <h1>Trace Debugger</h1>
+        <p>Debug and analyze pipeline execution traces</p>
+      </div>
+
+      <div class="debugger-container">
+        <div class="trace-list-panel">
+          <div class="panel-header">
+            <h3>Recent Traces</h3>
+            <div class="trace-filters">
+              <select id="traceFilter">
+                <option value="all">All Traces</option>
+                <option value="errors">Errors Only</option>
+                <option value="slow">Slow Queries (>1s)</option>
+              </select>
+            </div>
+          </div>
+          <div class="trace-list" id="traceList">
+            <!-- Trace items will be populated by JS -->
+          </div>
+        </div>
+
+        <div class="trace-detail-panel">
+          <div class="panel-header">
+            <h3>Trace Details</h3>
+            <div class="trace-actions">
+              <button class="btn-secondary" id="exportTraceBtn">
+                <i data-lucide="download"></i>
+                Export
+              </button>
+            </div>
+          </div>
+          <div class="trace-visualization" id="traceVisualization">
+            <div class="trace-placeholder">
+              <i data-lucide="search"></i>
+              <p>Select a trace to visualize execution flow</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry Page -->
+    <div id="telemetry" class="page">
+      <div class="page-header">
+        <h1>Telemetry Dashboard</h1>
+        <p>Detailed metrics and performance monitoring</p>
+      </div>
+
+      <div class="telemetry-container">
+        <!-- Latency Charts -->
+        <div class="chart-card">
+          <h3>Latency Distribution</h3>
+          <div class="chart-container">
+            <canvas id="latencyChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Token Usage -->
+        <div class="chart-card">
+          <h3>Token Usage Over Time</h3>
+          <div class="chart-container">
+            <canvas id="tokenChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Cost Breakdown -->
+        <div class="chart-card">
+          <h3>Cost Breakdown</h3>
+          <div class="cost-breakdown" id="costBreakdown">
+            <!-- Cost items will be populated by JS -->
+          </div>
+        </div>
+
+        <!-- Performance Metrics -->
+        <div class="metrics-table">
+          <h3>Performance Metrics</h3>
+          <table id="performanceTable">
+            <thead>
+              <tr>
+                <th>Operation</th>
+                <th>P50</th>
+                <th>P95</th>
+                <th>P99</th>
+                <th>Count</th>
+              </tr>
+            </thead>
+            <tbody id="performanceTableBody">
+              <!-- Table rows will be populated by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Plugins Page -->
+    <div id="plugins" class="page">
+      <div class="page-header">
+        <h1>Plugin Development</h1>
+        <p>Extend GlassBox RAG with custom plugins</p>
+      </div>
+
+      <div class="plugins-container">
+        <!-- Plugin Types -->
+        <div class="plugin-section">
+          <h3>Plugin Types</h3>
+          <div class="plugin-types-grid">
+            <div class="plugin-type-card">
+              <div class="plugin-icon">
+                <i data-lucide="cpu"></i>
+              </div>
+              <h4>Encoders</h4>
+              <p>Text embedding providers (OpenAI, Cohere, HuggingFace, etc.)</p>
+              <button class="btn-secondary" onclick="showPluginDocs('encoder')">
+                View Docs
+              </button>
+            </div>
+
+            <div class="plugin-type-card">
+              <div class="plugin-icon">
+                <i data-lucide="database"></i>
+              </div>
+              <h4>Vector Stores</h4>
+              <p>Vector similarity search (Qdrant, Pinecone, Weaviate, etc.)</p>
+              <button class="btn-secondary" onclick="showPluginDocs('vectorstore')">
+                View Docs
+              </button>
+            </div>
+
+            <div class="plugin-type-card">
+              <div class="plugin-icon">
+                <i data-lucide="server"></i>
+              </div>
+              <h4>Databases</h4>
+              <p>Document storage (PostgreSQL, MongoDB, etc.)</p>
+              <button class="btn-secondary" onclick="showPluginDocs('database')">
+                View Docs
+              </button>
+            </div>
+
+            <div class="plugin-type-card">
+              <div class="plugin-icon">
+                <i data-lucide="file-text"></i>
+              </div>
+              <h4>Multimodal</h4>
+              <p>Content processors (PDF, Image, PPTX extractors)</p>
+              <button class="btn-secondary" onclick="showPluginDocs('multimodal')">
+                View Docs
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Plugin Development Guide -->
+        <div class="plugin-section">
+          <h3>Development Guide</h3>
+          <div class="guide-content" id="pluginGuide">
+            <div class="guide-step">
+              <h4>1. Choose Plugin Type</h4>
+              <p>Select the component you want to extend based on your use case.</p>
+            </div>
+            <div class="guide-step">
+              <h4>2. Implement the ABC</h4>
+              <p>Inherit from the appropriate base class and implement required methods.</p>
+            </div>
+            <div class="guide-step">
+              <h4>3. Register Your Plugin</h4>
+              <p>Add your plugin to the configuration and restart the engine.</p>
+            </div>
+            <div class="guide-step">
+              <h4>4. Test Integration</h4>
+              <p>Use the debugger to verify your plugin works correctly.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Supabase Integration -->
+        <div class="plugin-section">
+          <h3>Supabase Integration</h3>
+          <div class="supabase-info">
+            <p><strong>GlassBox RAG works with Supabase!</strong></p>
+            <p>Configure your PostgreSQL connection string to point to your Supabase database:</p>
+            <div class="code-block">
+              <pre><code>database:
+  postgresql:
+    host: your-project.supabase.co
+    port: 5432
+    database: postgres
+    user: postgres
+    password: your-password</code></pre>
+            </div>
+            <p>Supabase provides PostgreSQL with real-time subscriptions, authentication, and edge functions that complement GlassBox's capabilities.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Plugin Documentation Modal -->
+  <div id="pluginModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modalTitle">Plugin Documentation</h3>
+        <button class="modal-close" onclick="closePluginModal()">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body" id="modalContent">
+        <!-- Plugin documentation will be loaded here -->
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    // Initialize Lucide icons
+    lucide.createIcons();
+  </script>
+</body>
+</html>

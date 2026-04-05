@@ -1,30 +1,39 @@
-"""Base classes for all plugins."""
+"""Base classes for all plugins.
+
+Defines contracts for vector stores, databases, and custom extensions.
+The EmbedderPlugin has been unified into core/encoder.py's BaseEncoder.
+"""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from glassbox_rag.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class Plugin(ABC):
     """Base class for all plugins."""
 
     def __init__(self, config: Dict[str, Any]):
-        """Initialize plugin."""
         self.config = config
 
     @abstractmethod
-    def initialize(self) -> bool:
+    async def initialize(self) -> bool:
         """
         Initialize the plugin.
 
         Returns:
             True if initialization successful, False otherwise.
         """
-        pass
 
     @abstractmethod
-    def shutdown(self) -> None:
-        """Shutdown the plugin."""
-        pass
+    async def shutdown(self) -> None:
+        """Shutdown the plugin and release resources."""
+
+    @abstractmethod
+    async def health_check(self) -> bool:
+        """Check if the plugin is healthy and operational."""
 
 
 class VectorStorePlugin(Plugin):
@@ -34,6 +43,8 @@ class VectorStorePlugin(Plugin):
     async def add_vectors(
         self,
         vectors: List[List[float]],
+        ids: Optional[List[str]] = None,
+        contents: Optional[List[str]] = None,
         metadata: Optional[List[Dict[str, Any]]] = None,
     ) -> List[str]:
         """
@@ -41,70 +52,43 @@ class VectorStorePlugin(Plugin):
 
         Args:
             vectors: List of embedding vectors.
+            ids: Optional IDs for each vector.
+            contents: Optional text content for each vector.
             metadata: Optional metadata for each vector.
 
         Returns:
             List of vector IDs.
         """
-        pass
 
     @abstractmethod
     async def search(
         self,
         query_vector: List[float],
         top_k: int = 5,
-        **kwargs,
-    ) -> List[tuple[str, float]]:
+        **kwargs: Any,
+    ) -> List[Tuple[str, float, str, Dict[str, Any]]]:
         """
         Search for similar vectors.
 
         Args:
             query_vector: Query embedding vector.
             top_k: Number of results to return.
-            **kwargs: Additional search parameters.
 
         Returns:
-            List of (id, score) tuples.
+            List of (id, score, content, metadata) tuples.
         """
-        pass
 
     @abstractmethod
-    async def get_vector(self, vector_id: str) -> Optional[List[float]]:
-        """Get a vector by ID."""
-        pass
+    async def get_vector(self, vector_id: str) -> Optional[Dict[str, Any]]:
+        """Get a vector and its metadata by ID."""
 
     @abstractmethod
     async def delete_vector(self, vector_id: str) -> bool:
         """Delete a vector by ID."""
-        pass
-
-
-class EmbedderPlugin(Plugin):
-    """Base class for embedder plugins."""
 
     @abstractmethod
-    async def embed(self, texts: List[str]) -> List[List[float]]:
-        """
-        Embed a list of texts.
-
-        Args:
-            texts: List of text strings to embed.
-
-        Returns:
-            List of embedding vectors.
-        """
-        pass
-
-    @abstractmethod
-    async def embed_single(self, text: str) -> List[float]:
-        """Embed a single text."""
-        pass
-
-    @property
-    @abstractmethod
-    def embedding_dim(self) -> int:
-        """Get embedding dimension."""
-        pass
+    async def count(self) -> int:
+        """Get total number of vectors in the store."""
 
 
 class DatabasePlugin(Plugin):
@@ -113,7 +97,6 @@ class DatabasePlugin(Plugin):
     @abstractmethod
     async def connect(self) -> bool:
         """Connect to the database."""
-        pass
 
     @abstractmethod
     async def insert(self, table: str, data: Dict[str, Any]) -> str:
@@ -127,17 +110,14 @@ class DatabasePlugin(Plugin):
         Returns:
             Record ID.
         """
-        pass
 
     @abstractmethod
     async def update(self, table: str, record_id: str, data: Dict[str, Any]) -> bool:
         """Update a record."""
-        pass
 
     @abstractmethod
     async def delete(self, table: str, record_id: str) -> bool:
         """Delete a record."""
-        pass
 
     @abstractmethod
     async def query(
@@ -146,4 +126,15 @@ class DatabasePlugin(Plugin):
         filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Query records."""
-        pass
+
+    @abstractmethod
+    async def search_text(
+        self,
+        terms: List[str],
+        top_k: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Full-text search across documents."""
+
+    @abstractmethod
+    async def ensure_tables(self) -> None:
+        """Create required tables if they don't exist."""

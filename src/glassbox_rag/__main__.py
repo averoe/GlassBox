@@ -1,4 +1,4 @@
-"""Entry point for running GlassBox RAG as a module."""
+"""__main__ entry point for `python -m glassbox_rag`."""
 
 from glassbox_rag.cli import main
 

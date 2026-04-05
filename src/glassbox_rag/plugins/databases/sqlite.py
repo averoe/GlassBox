@@ -1,111 +1,197 @@
-"""SQLite database plugin implementation."""
+"""SQLite database plugin — real implementation using aiosqlite."""
 
-from typing import List, Optional, Dict, Any
-import sqlite3
+import json
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from glassbox_rag.plugins.base import DatabasePlugin
+from glassbox_rag.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class SQLiteDatabase(DatabasePlugin):
-    """SQLite database implementation (single-file, good for development)."""
+    """SQLite database implementation using aiosqlite for async I/O."""
 
     def __init__(self, config: Dict[str, Any]):
-        """Initialize SQLite database."""
         super().__init__(config)
         self.path = config.get("path", "./data/glassbox.db")
-        
-        # TODO: Initialize SQLite connection
-        self.connection = None
-        self.connected = False
+        self._db = None
 
-    def initialize(self) -> bool:
-        """Initialize the database connection."""
+    async def initialize(self) -> bool:
         try:
-            # TODO: Create/open SQLite database
-            # self.connection = sqlite3.connect(self.path)
-            # self.connection.row_factory = sqlite3.Row
-            
-            print(f"Initialized SQLite database at {self.path}")
-            self.connected = True
-            return True
+            connected = await self.connect()
+            if connected:
+                await self.ensure_tables()
+            return connected
         except Exception as e:
-            print(f"Failed to initialize SQLite: {e}")
+            logger.error("Failed to initialize SQLite: %s", e)
             return False
 
     async def connect(self) -> bool:
-        """Connect to the database."""
-        return self.initialize()
+        try:
+            import aiosqlite
+            import os
 
-    def shutdown(self) -> None:
-        """Shutdown the database connection."""
-        if self.connection:
-            # TODO: Close connection
-            pass
-        self.connected = False
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self._db = await aiosqlite.connect(self.path)
+            self._db.row_factory = aiosqlite.Row
+            await self._db.execute("PRAGMA journal_mode=WAL")
+            await self._db.execute("PRAGMA foreign_keys=ON")
+            logger.info("SQLite connected: %s", self.path)
+            return True
+        except ImportError:
+            logger.error("aiosqlite not installed. Run: pip install glassbox-rag[databases]")
+            return False
+        except Exception as e:
+            logger.error("Failed to connect to SQLite: %s", e)
+            return False
+
+    async def shutdown(self) -> None:
+        if self._db:
+            await self._db.close()
+            self._db = None
+
+    async def health_check(self) -> bool:
+        if self._db is None:
+            return False
+        try:
+            async with self._db.execute("SELECT 1") as cursor:
+                await cursor.fetchone()
+            return True
+        except Exception:
+            return False
+
+    async def ensure_tables(self) -> None:
+        if self._db is None:
+            return
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_documents_created
+            ON documents(created_at)
+        """)
+        await self._db.commit()
+        logger.debug("SQLite tables ensured")
 
     async def insert(self, table: str, data: Dict[str, Any]) -> str:
-        """Insert a record."""
-        try:
-            # TODO: Implement actual insert
-            # cursor = self.connection.cursor()
-            # columns = ", ".join(data.keys())
-            # placeholders = ", ".join(["?" for _ in data])
-            # query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
-            # cursor.execute(query, list(data.values()))
-            # self.connection.commit()
-            # return str(cursor.lastrowid)
-            
-            return "1"
-        except Exception as e:
-            print(f"Error inserting into {table}: {e}")
-            return ""
+        if self._db is None:
+            raise RuntimeError("Database not connected")
+
+        record_id = data.get("id", str(uuid4()))
+        content = data.get("content", "")
+        metadata = json.dumps(data.get("metadata", {}))
+
+        await self._db.execute(
+            f"INSERT OR REPLACE INTO {table} (id, content, metadata) VALUES (?, ?, ?)",
+            (record_id, content, metadata),
+        )
+        await self._db.commit()
+        return record_id
 
     async def update(self, table: str, record_id: str, data: Dict[str, Any]) -> bool:
-        """Update a record."""
-        try:
-            # TODO: Implement actual update
-            # cursor = self.connection.cursor()
-            # set_clause = ", ".join([f"{k}=?" for k in data.keys()])
-            # query = f"UPDATE {table} SET {set_clause} WHERE id=?"
-            # cursor.execute(query, [*data.values(), record_id])
-            # self.connection.commit()
-            # return cursor.rowcount > 0
-            return True
-        except Exception as e:
-            print(f"Error updating {table}: {e}")
-            return False
+        if self._db is None:
+            raise RuntimeError("Database not connected")
+
+        set_clauses = []
+        values = []
+
+        if "content" in data:
+            set_clauses.append("content = ?")
+            values.append(data["content"])
+        if "metadata" in data:
+            set_clauses.append("metadata = ?")
+            values.append(json.dumps(data["metadata"]))
+
+        set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(record_id)
+
+        query = f"UPDATE {table} SET {', '.join(set_clauses)} WHERE id = ?"
+        cursor = await self._db.execute(query, values)
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def delete(self, table: str, record_id: str) -> bool:
-        """Delete a record."""
-        try:
-            # TODO: Implement actual delete
-            # cursor = self.connection.cursor()
-            # cursor.execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
-            # self.connection.commit()
-            # return cursor.rowcount > 0
-            return True
-        except Exception as e:
-            print(f"Error deleting from {table}: {e}")
-            return False
+        if self._db is None:
+            raise RuntimeError("Database not connected")
+
+        cursor = await self._db.execute(
+            f"DELETE FROM {table} WHERE id = ?", (record_id,)
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def query(
         self,
         table: str,
         filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Query records."""
-        try:
-            # TODO: Implement actual query
-            # cursor = self.connection.cursor()
-            # if filters:
-            #     where_clause = " AND ".join([f"{k}=?" for k in filters.keys()])
-            #     query = f"SELECT * FROM {table} WHERE {where_clause}"
-            #     cursor.execute(query, list(filters.values()))
-            # else:
-            #     cursor.execute(f"SELECT * FROM {table}")
-            # return [dict(row) for row in cursor.fetchall()]
-            
-            return []
-        except Exception as e:
-            print(f"Error querying {table}: {e}")
-            return []
+        if self._db is None:
+            raise RuntimeError("Database not connected")
+
+        query_str = f"SELECT * FROM {table}"
+        values: List[Any] = []
+
+        if filters:
+            conditions = []
+            for key, value in filters.items():
+                conditions.append(f"{key} = ?")
+                values.append(value)
+            query_str += " WHERE " + " AND ".join(conditions)
+
+        query_str += " ORDER BY created_at DESC LIMIT 1000"
+
+        rows = []
+        async with self._db.execute(query_str, values) as cursor:
+            async for row in cursor:
+                row_dict = dict(row)
+                if "metadata" in row_dict and isinstance(row_dict["metadata"], str):
+                    try:
+                        row_dict["metadata"] = json.loads(row_dict["metadata"])
+                    except json.JSONDecodeError:
+                        pass
+                rows.append(row_dict)
+
+        return rows
+
+    async def search_text(
+        self,
+        terms: List[str],
+        top_k: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Simple LIKE-based text search."""
+        if self._db is None:
+            raise RuntimeError("Database not connected")
+
+        conditions = []
+        values: List[str] = []
+        for term in terms:
+            conditions.append("content LIKE ?")
+            values.append(f"%{term}%")
+
+        query = f"SELECT * FROM documents WHERE {' OR '.join(conditions)} LIMIT ?"
+        values.append(str(top_k))
+
+        rows = []
+        async with self._db.execute(query, values) as cursor:
+            async for row in cursor:
+                row_dict = dict(row)
+                # Simple relevance score: count matching terms
+                content_lower = row_dict.get("content", "").lower()
+                match_count = sum(1 for t in terms if t.lower() in content_lower)
+                row_dict["score"] = match_count / max(len(terms), 1)
+                if "metadata" in row_dict and isinstance(row_dict["metadata"], str):
+                    try:
+                        row_dict["metadata"] = json.loads(row_dict["metadata"])
+                    except json.JSONDecodeError:
+                        row_dict["metadata"] = {}
+                rows.append(row_dict)
+
+        return sorted(rows, key=lambda x: x.get("score", 0), reverse=True)

@@ -1,0 +1,75 @@
+# Docker Compose for GlassBox RAG integration testing
+# Provides real Qdrant, PostgreSQL, and Redis backends
+
+version: "3.9"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:6333/readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: glassbox
+      POSTGRES_PASSWORD: glassbox_test
+      POSTGRES_DB: glassbox_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glassbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  chromadb:
+    image: chromadb/chroma:0.4.22
+    ports:
+      - "8001:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  # Runs the full integration test suite once backends are healthy
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      GLASSBOX_QDRANT_HOST: qdrant
+      GLASSBOX_POSTGRES_HOST: postgres
+      GLASSBOX_POSTGRES_PORT: 5432
+      GLASSBOX_POSTGRES_USER: glassbox
+      GLASSBOX_POSTGRES_PASSWORD: glassbox_test
+      GLASSBOX_POSTGRES_DB: glassbox_test
+      GLASSBOX_REDIS_URL: redis://redis:6379
+    command: >
+      python -m pytest tests/integration/ -v --tb=short -x

@@ -1,3 +1,3 @@
 """Database plugins package."""
 
-__all__ = ["postgresql", "sqlite"]
+__all__ = ["postgresql", "sqlite", "mongodb", "mysql"]
