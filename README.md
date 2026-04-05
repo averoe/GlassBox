@@ -43,6 +43,18 @@ cd glassbox-rag
 pip install -e .
 ```
 
+### Development Setup
+
+For development with all optional dependencies:
+
+```bash
+# Using pip
+pip install -e ".[dev,embeddings,vector-stores,databases,multimodal,telemetry,auth,reranking]"
+
+# Or using the Makefile
+make dev
+```
+
 ## Quick Start
 
 ```python
@@ -267,6 +279,55 @@ pytest tests/unit/ -v      # Unit tests
 pytest tests/integration/ -v  # Integration tests
 ```
 
+Or use the Makefile:
+
+```bash
+make test          # Run all tests
+make test-unit     # Run unit tests only
+make test-integration  # Run integration tests only
+make ci           # Run CI pipeline (lint + test)
+```
+
+## Build System
+
+GlassBox includes a comprehensive build system using Make:
+
+```bash
+# Development setup
+make dev           # Setup development environment
+make install       # Install dependencies
+
+# Quality checks
+make lint          # Run linting
+make format        # Format code
+make test          # Run tests
+make ci           # Run CI pipeline
+
+# Building
+make build         # Build package
+make check         # Check package for PyPI
+make publish       # Publish to PyPI
+
+# Docker operations
+make docker-build  # Build Docker image
+make docker-run    # Run Docker container
+make docker-compose-up     # Start development services
+make docker-compose-prod-up # Start production services
+
+# Full pipeline
+make all           # Clean, install, lint, test, build, check
+make release       # Full release pipeline
+```
+
+Available Make targets:
+- `make help` - Show all available targets
+- `make clean` - Clean build artifacts
+- `make install` - Install dependencies
+- `make test` - Run all tests
+- `make build` - Build package
+- `make docker-*` - Docker operations
+- `make all` - Full build pipeline
+
 ## Architecture
 
 ### System Overview
@@ -345,47 +406,73 @@ Input Query/Document
 
 ## Production Deployment
 
+## Production Deployment
+
 ### Docker Deployment
+
+Build and run with Docker:
+
 ```bash
 # Build the image
 docker build -t glassbox-rag .
 
 # Run with configuration
 docker run -p 8000:8000 \
-  -v $(pwd)/config:/app/config \
+  -v $(pwd)/config:/app/config:ro \
   -e OPENAI_API_KEY=your_key \
   glassbox-rag
 ```
 
-### Docker Compose
-```yaml
-version: '3.8'
-services:
-  glassbox:
-    image: glassbox-rag
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./config:/app/config
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=${DATABASE_URL}
-    depends_on:
-      - qdrant
-      - postgres
+Or use the Makefile:
 
-  qdrant:
-    image: qdrant/qdrant
-    ports:
-      - "6333:6333"
-
-  postgres:
-    image: postgres:15
-    environment:
-      - POSTGRES_DB=glassbox
-      - POSTGRES_USER=glassbox
-      - POSTGRES_PASSWORD=password
+```bash
+make docker-build  # Build Docker image
+make docker-run    # Run Docker container
 ```
+
+### Docker Compose
+
+For development with all services:
+
+```bash
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+```
+
+For production deployment:
+
+```bash
+# Start production services with monitoring
+docker-compose -f docker-compose.prod.yml --profile monitoring up -d
+
+# Stop production services
+docker-compose -f docker-compose.prod.yml down
+```
+
+Or use the Makefile:
+
+```bash
+make docker-compose-up      # Start development services
+make docker-compose-down    # Stop development services
+make docker-compose-prod-up   # Start production services
+make docker-compose-prod-down # Stop production services
+```
+
+### Production Services
+
+The production setup includes:
+- **GlassBox RAG**: Main application with health checks and resource limits
+- **Qdrant**: Vector database with persistence and health monitoring
+- **PostgreSQL**: Document storage with optimized configuration
+- **Redis**: Caching and rate limiting (optional)
+- **Prometheus**: Metrics collection (optional, with monitoring profile)
+- **Grafana**: Dashboard visualization (optional, with monitoring profile)
 
 ## Monitoring & Observability
 

@@ -12,27 +12,38 @@ license = "Apache-2.0"
 authors = [
     {name = "averoe"}
 ]
-keywords = ["rag", "retrieval", "generation", "onnx", "ollama", "vector-store", "multimodal"]
+maintainers = [
+    {name = "averoe"}
+]
+keywords = ["rag", "retrieval", "generation", "onnx", "ollama", "vector-store", "multimodal", "ai", "ml", "embeddings"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 
 dependencies = [
-    "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
-    "pyyaml>=6.0",
-    "numpy>=1.24.0",
-    "requests>=2.31.0",
-    "python-multipart>=0.0.6",
-    "httpx>=0.25.0",
+    "fastapi>=0.104.0,<1.0.0",
+    "uvicorn[standard]>=0.24.0,<1.0.0",
+    "pydantic>=2.0.0,<3.0.0",
+    "pydantic-settings>=2.0.0,<3.0.0",
+    "pyyaml>=6.0,<7.0",
+    "numpy>=1.24.0,<2.0.0",
+    "requests>=2.31.0,<3.0.0",
+    "python-multipart>=0.0.6,<1.0.0",
+    "httpx>=0.25.0,<1.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -100,11 +111,19 @@ all = [
     "glassbox-rag[embeddings,vector-stores,databases,multimodal,telemetry,auth,reranking]",
 ]
 
+[project.urls]
+Homepage = "https://github.com/averoe/GlassBox"
+Documentation = "https://github.com/averoe/GlassBox#readme"
+Repository = "https://github.com/averoe/GlassBox"
+Issues = "https://github.com/averoe/GlassBox/issues"
+Changelog = "https://github.com/averoe/GlassBox/blob/main/CHANGELOG.md"
+
 [project.scripts]
 glassbox-rag = "glassbox_rag.cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+zip-safe = false
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -112,6 +131,9 @@ include = ["glassbox_rag*"]
 
 [tool.setuptools.package-data]
 glassbox_rag = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = {attr = "glassbox_rag.__version__"}
 
 [tool.black]
 line-length = 100
