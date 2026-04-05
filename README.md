@@ -269,7 +269,49 @@ pytest tests/integration/ -v  # Integration tests
 
 ## Architecture
 
-GlassBox consists of several core components:
+### System Overview
+
+```mermaid
+graph TB
+    A[Client/API] --> B[FastAPI Server]
+    B --> C[Rate Limiting]
+    B --> D[Authentication]
+    
+    C --> E[GlassBox Engine]
+    D --> E
+    
+    E --> F[Text Processor]
+    E --> G[Encoder Plugin]
+    E --> H[Retriever]
+    E --> I[Vector Store Plugin]
+    E --> J[Database Plugin]
+    E --> K[Multimodal Processor]
+    
+    F --> L[Chunking Strategies]
+    H --> M[Reranking]
+    
+    G --> N[OpenAI/Ollama/ONNX]
+    I --> O[Qdrant/Chroma/FAISS]
+    J --> P[PostgreSQL/MongoDB]
+    K --> Q[Image/Audio/Video]
+    
+    E --> R[Metrics Tracker]
+    E --> S[Trace System]
+    E --> T[Writeback Manager]
+    
+    R --> U[Prometheus Export]
+    S --> V[Database Storage]
+    T --> W[Conflict Resolution]
+    
+    B --> X[Web Dashboard]
+    X --> Y[Overview Page]
+    X --> Z[Pipeline Visualization]
+    X --> AA[Debugger Interface]
+    X --> BB[Telemetry Dashboard]
+    X --> CC[Plugin Documentation]
+```
+
+### Core Components
 
 - **Engine**: Orchestrates all RAG operations and coordinates components
 - **Encoder**: Handles text and multimodal content encoding to vectors
@@ -280,6 +322,26 @@ GlassBox consists of several core components:
 - **Trace System**: Records execution traces for debugging and analysis
 - **Writeback Manager**: Handles document updates with conflict resolution
 - **Text Processor**: Implements advanced chunking and preprocessing
+
+### Data Flow
+
+```
+Input Query/Document
+        ↓
+   Text Processing
+        ↓
+     Chunking
+        ↓
+    Encoding
+        ↓
+  Vector Store
+        ↓
+   Retrieval
+        ↓
+  Reranking
+        ↓
+   Response
+```
 
 ## Production Deployment
 
@@ -345,7 +407,17 @@ We welcome contributions! Please:
 4. Ensure all tests pass
 5. Submit a pull request
 
-See CONTRIBUTING.md for detailed guidelines.
+**Note**: Detailed contributing guidelines (CONTRIBUTING.md) are not yet available. Please follow standard Python development practices and ensure your code includes proper type hints and documentation.
+
+## Documentation
+
+**Note**: Comprehensive documentation is not yet available. The project includes:
+- This README with setup and usage instructions
+- Inline code documentation and type hints
+- Web dashboard with interactive plugin documentation
+- API documentation available at `/docs` when running the server
+
+We plan to add full documentation in future releases.
 
 ## License
 
@@ -355,5 +427,6 @@ Licensed under the Apache License 2.0. See LICENSE file for details.
 
 For issues, questions, or suggestions:
 - Open an issue on GitHub
-- Check the documentation at https://glassbox-rag.readthedocs.io/
+- Check the web dashboard documentation at `http://localhost:8000` when running the server
+- API documentation available at `http://localhost:8000/docs` when running the server
 - Join our community discussions
