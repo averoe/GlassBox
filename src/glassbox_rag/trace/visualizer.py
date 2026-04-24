@@ -5,6 +5,8 @@ Provides ASCII waterfalls, cost breakdowns, per-step inspection,
 trace comparison, and simple anomaly detection.
 """
 
+from __future__ import annotations
+
 from typing import Dict, List, Optional
 
 from glassbox_rag.trace.tracker import Trace, TraceStep
@@ -59,7 +61,7 @@ class VisualDebugger:
         if total_ms == 0:
             return "Trace duration is zero"
 
-        lines: List[str] = []
+        lines: list[str] = []
         lines.append(f"╔══ Latency Waterfall (total: {total_ms:.1f}ms) " + "═" * max(0, width - 30))
 
         steps = _flatten_steps(trace.root_step)
@@ -76,7 +78,10 @@ class VisualDebugger:
 
             bar = _render_bar(start_pct, width_pct, bar_width=width - 30)
             indent = "  " * depth
-            name = step.name[:18].ljust(18)
+            # Cap indent + name width to keep columns aligned regardless of depth
+            available = max(4, 18 - len(indent))
+            truncated_name = (step.name[:available - 2] + "..") if len(step.name) > available else step.name
+            name = truncated_name.ljust(available)
             status = "❌" if step.error else ""
 
             lines.append(
@@ -98,7 +103,7 @@ class VisualDebugger:
         if not trace.root_step:
             return "No trace data"
 
-        lines: List[str] = []
+        lines: list[str] = []
         lines.append("╔══ Cost & Token Breakdown ═══════════════════════")
 
         steps = _flatten_steps(trace.root_step)
@@ -128,7 +133,7 @@ class VisualDebugger:
     # ── Per-Step Inspection ───────────────────────────────────────
 
     @staticmethod
-    def inspect_step(trace: Trace, step_name: str) -> Optional[Dict]:
+    def inspect_step(trace: Trace, step_name: str) -> Dict | None:
         """
         Get detailed info for a specific step by name.
 
@@ -171,7 +176,7 @@ class VisualDebugger:
 
         all_names = sorted(set(list(steps_a.keys()) + list(steps_b.keys())))
 
-        comparisons: List[Dict] = []
+        comparisons: list[Dict] = []
         for name in all_names:
             a_ms = steps_a[name].get_duration_ms() if name in steps_a else None
             b_ms = steps_b[name].get_duration_ms() if name in steps_b else None
@@ -186,6 +191,7 @@ class VisualDebugger:
                 "trace_b_ms": b_ms,
                 "diff_ms": diff,
                 "faster": "A" if diff and diff > 0 else ("B" if diff and diff < 0 else "equal"),
+                "slower": "B" if diff and diff > 0 else ("A" if diff and diff < 0 else "equal"),
             })
 
         return {
@@ -201,9 +207,9 @@ class VisualDebugger:
 
     @staticmethod
     def detect_anomalies(
-        traces: List[Trace],
+        traces: list[Trace],
         threshold_multiplier: float = 2.0,
-    ) -> List[Dict]:
+    ) -> list[Dict]:
         """
         Detect anomalous steps across a list of traces.
 
@@ -221,7 +227,7 @@ class VisualDebugger:
         import math
 
         # Collect per-step durations
-        step_durations: Dict[str, List[tuple]] = defaultdict(list)
+        step_durations: dict[str, list[tuple]] = defaultdict(list)
         for trace in traces:
             if not trace.root_step:
                 continue
@@ -230,13 +236,35 @@ class VisualDebugger:
                 if ms > 0:
                     step_durations[step.name].append((trace.trace_id, ms))
 
-        anomalies: List[Dict] = []
+        anomalies: list[Dict] = []
         for step_name, entries in step_durations.items():
-            if len(entries) < 3:
-                continue  # Need at least 3 samples
+            if len(entries) < 2:
+                continue  # Need at least a baseline to compare against
+
+            if len(entries) < 5:
+                logger.debug(
+                    "Step '%s': only %d samples, anomaly detection less reliable",
+                    step_name, len(entries),
+                )
 
             durations = [d for _, d in entries]
             mean = sum(durations) / len(durations)
+
+            # For 2-sample case, use ratio instead of stddev (stddev would be trivial)
+            if len(entries) == 2:
+                for trace_id, ms in entries:
+                    if mean > 0 and ms / mean > threshold_multiplier:
+                        anomalies.append({
+                            "trace_id": trace_id,
+                            "step": step_name,
+                            "duration_ms": round(ms, 3),
+                            "mean_ms": round(mean, 3),
+                            "stddev_ms": 0,
+                            "threshold_ms": round(mean * threshold_multiplier, 3),
+                            "times_slower": round(ms / mean, 2),
+                        })
+                continue
+
             variance = sum((d - mean) ** 2 for d in durations) / len(durations)
             stddev = math.sqrt(variance) if variance > 0 else 0
 
@@ -259,7 +287,7 @@ class VisualDebugger:
     # ── Filtering / Search ────────────────────────────────────────
 
     @staticmethod
-    def filter_by_name(traces: List[Trace], name_pattern: str) -> List[Trace]:
+    def filter_by_name(traces: list[Trace], name_pattern: str) -> list[Trace]:
         """Filter traces containing a step matching the pattern."""
         filtered = []
         for trace in traces:
@@ -268,12 +296,12 @@ class VisualDebugger:
         return filtered
 
     @staticmethod
-    def filter_slow_traces(traces: List[Trace], min_duration_ms: float) -> List[Trace]:
+    def filter_slow_traces(traces: list[Trace], min_duration_ms: float) -> list[Trace]:
         """Filter traces slower than the given threshold."""
         return [t for t in traces if t.get_duration_ms() >= min_duration_ms]
 
     @staticmethod
-    def filter_error_traces(traces: List[Trace]) -> List[Trace]:
+    def filter_error_traces(traces: list[Trace]) -> list[Trace]:
         """Filter traces that contain errors."""
         result = []
         for trace in traces:
@@ -304,7 +332,7 @@ class VisualDebugger:
     @staticmethod
     def get_step_tree(
         step: TraceStep,
-        max_depth: Optional[int] = None,
+        max_depth: int | None = None,
         depth: int = 0,
     ) -> Dict:
         """Convert step to nested tree structure."""
@@ -360,7 +388,9 @@ class VisualDebugger:
         lines_dur = []
 
         for i, (step, _) in enumerate(pipeline_steps):
-            name = step.name[:10].center(10)
+            raw = step.name
+            name = (raw[:8] + "..") if len(raw) > 10 else raw
+            name = name.center(10)
             ms = step.get_duration_ms()
             dur = f"{ms:.1f}ms".center(10)
             status = "❌" if step.error else ""
@@ -388,14 +418,19 @@ class VisualDebugger:
     @staticmethod
     def format_telemetry_dashboard(
         trace: "Trace",
-        telemetry_status: Optional[Dict] = None,
-        metrics_summary: Optional[Dict] = None,
+        telemetry_status: Dict | None = None,
+        metrics_summary: Dict | None = None,
+        as_html: bool = False,
     ) -> str:
         """
         Generate a combined telemetry dashboard.
 
         Integrates trace waterfall + Prometheus/OTel status
         into a single view for debugging and monitoring.
+
+        Args:
+            as_html: If True, wrap the ASCII output in a minimal HTML template
+                     suitable for HTMLResponse from a web server.
         """
         lines: list = []
         lines.append("╔══════════════════════════════════════════════════════════════")
@@ -446,13 +481,28 @@ class VisualDebugger:
             lines.append("║")
 
         lines.append("╚══════════════════════════════════════════════════════════════")
-        return "\n".join(lines)
+        ascii_out = "\n".join(lines)
+
+        if not as_html:
+            return ascii_out
+
+        # Wrap in a minimal HTML template for browser rendering
+        import html as html_mod
+        escaped = html_mod.escape(ascii_out)
+        return (
+            f'<!DOCTYPE html>\n'
+            f'<html><head><meta charset="utf-8">\n'
+            f'<title>GlassBox Trace {trace.trace_id[:8]}</title>\n'
+            f'<style>body{{background:#0f1117;color:#cdd6f4;font-family:monospace;padding:2rem}}\n'
+            f'pre{{white-space:pre-wrap;line-height:1.6}}</style></head>\n'
+            f'<body><pre>{escaped}</pre></body></html>'
+        )
 
     @staticmethod
     def get_enriched_summary(
         trace: "Trace",
-        telemetry_status: Optional[Dict] = None,
-        metrics_summary: Optional[Dict] = None,
+        telemetry_status: Dict | None = None,
+        metrics_summary: Dict | None = None,
     ) -> Dict:
         """
         Get trace summary enriched with telemetry context.
@@ -491,7 +541,7 @@ class VisualDebugger:
 def _flatten_steps(
     step: TraceStep,
     depth: int = 0,
-) -> List[tuple]:
+) -> list[tuple]:
     """Flatten a step tree to list of (step, depth) tuples."""
     result = [(step, depth)]
     for child in step.children:
@@ -499,7 +549,7 @@ def _flatten_steps(
     return result
 
 
-def _find_step_by_name(step: TraceStep, name: str) -> Optional[TraceStep]:
+def _find_step_by_name(step: TraceStep, name: str) -> TraceStep | None:
     """Find first step matching name."""
     if step.name == name:
         return step

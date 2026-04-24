@@ -6,6 +6,8 @@ human review, and read-only mode. Includes input validation and
 structured logging.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Dict, Any
@@ -36,9 +38,9 @@ class WriteBackRequest:
     operation: str  # "create", "update", or "delete"
     document_id: str
     content: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     confidence_score: float = 1.0
-    user_id: Optional[str] = None
+    user_id: str | None = None
 
     def __post_init__(self) -> None:
         """Validate request fields."""
@@ -47,7 +49,7 @@ class WriteBackRequest:
             raise ValueError(
                 f"Invalid operation '{self.operation}'. Must be one of {valid_ops}"
             )
-        
+
         if not (0.0 <= self.confidence_score <= 1.0):
             raise ValueError(
                 f"confidence_score must be between 0.0 and 1.0, got {self.confidence_score}"
@@ -56,9 +58,10 @@ class WriteBackRequest:
         if not self.document_id or not self.document_id.strip():
             raise ValueError("document_id must not be empty")
 
-        if not 0.0 <= self.confidence_score <= 1.0:
+        # Guard against empty content for create/update operations
+        if self.operation in {"create", "update"} and not self.content.strip():
             raise ValueError(
-                f"confidence_score must be between 0.0 and 1.0, got {self.confidence_score}"
+                "content must not be empty for create/update operations"
             )
 
 
@@ -70,9 +73,9 @@ class WriteBackResult:
     operation_id: str
     message: str
     requires_review: bool = False
-    review_url: Optional[str] = None
+    review_url: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "success": self.success,
             "operation_id": self.operation_id,
@@ -100,7 +103,7 @@ class WriteBackManager:
         self.database = database
 
         # Pending review queue (in-memory for now)
-        self._pending_reviews: Dict[str, WriteBackRequest] = {}
+        self._pending_reviews: dict[str, WriteBackRequest] = {}
 
         logger.info("WriteBack manager initialized: mode=%s, enabled=%s", self.mode.value, self.enabled)
 
@@ -295,7 +298,7 @@ class WriteBackManager:
             message="Write operation rejected by reviewer",
         )
 
-    def get_pending_reviews(self) -> Dict[str, Dict]:
+    def get_pending_reviews(self) -> dict[str, Dict]:
         """Get all pending review requests."""
         return {
             op_id: {

@@ -6,6 +6,8 @@ observability backends. Integrates with the VisualDebugger to
 provide a unified observability dashboard.
 """
 
+from __future__ import annotations
+
 from typing import Any, Dict, List, Optional
 from glassbox_rag.utils.logging import get_logger
 
@@ -61,7 +63,7 @@ class OTelExporter:
     def __init__(
         self,
         service_name: str = "glassbox-rag",
-        endpoint: Optional[str] = None,
+        endpoint: str | None = None,
         exporter_type: str = "console",
     ):
         self.service_name = service_name
@@ -207,7 +209,7 @@ class PrometheusMetrics:
             return
 
         self.info = Info("glassbox", "GlassBox RAG framework info")
-        self.info.info({"version": "0.2.0"})
+        self.info.info({"version": "0.4.0"})
 
         self.requests_total = Counter(
             "glassbox_requests_total",
@@ -329,13 +331,13 @@ class TelemetryHub:
     def __init__(
         self,
         otel_enabled: bool = False,
-        otel_endpoint: Optional[str] = None,
+        otel_endpoint: str | None = None,
         otel_exporter: str = "console",
         prometheus_enabled: bool = False,
         service_name: str = "glassbox-rag",
     ):
-        self.otel_exporter: Optional[OTelExporter] = None
-        self.prometheus: Optional[PrometheusMetrics] = None
+        self.otel_exporter: OTelExporter | None = None
+        self.prometheus: PrometheusMetrics | None = None
 
         if otel_enabled:
             self.otel_exporter = OTelExporter(
@@ -410,7 +412,7 @@ class TelemetryHub:
             self.otel_exporter.shutdown()
 
 
-def _safe_attrs(data: Dict[str, Any]) -> Dict[str, str]:
+def _safe_attrs(data: dict[str, Any]) -> dict[str, str]:
     """Convert dict values to OTel-safe attribute types (str)."""
     result = {}
     for k, v in data.items():

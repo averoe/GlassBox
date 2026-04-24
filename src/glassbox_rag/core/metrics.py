@@ -5,9 +5,11 @@ Tracks token usage, latency, and costs per stage of the RAG pipeline.
 Uses contextvars for per-request isolation and adds percentile tracking.
 """
 
+from __future__ import annotations
+
 import contextvars
 import statistics
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -42,7 +44,7 @@ class OperationMetrics:
 
     operation_type: OperationType
     start_time: datetime
-    end_time: Optional[datetime] = None
+    end_time: datetime | None = None
 
     # Token tracking
     input_tokens: int = 0
@@ -83,9 +85,9 @@ class RequestMetrics:
 
     request_id: str
     start_time: datetime
-    end_time: Optional[datetime] = None
+    end_time: datetime | None = None
 
-    operations: List[OperationMetrics] = field(default_factory=list)
+    operations: list[OperationMetrics] = field(default_factory=list)
 
     # Aggregated values
     total_latency_ms: float = 0.0
@@ -194,12 +196,12 @@ class MetricsTracker:
         self.track_cost = config.metrics.track_cost
         self.costs = config.metrics.costs or {}
 
-        # Global request history (bounded)
-        self._request_history: Dict[str, RequestMetrics] = {}
+        # Global request history (bounded, ordered by insertion for O(1) eviction)
+        self._request_history: Ordereddict[str, RequestMetrics] = OrderedDict()
         self._max_history = 5000
 
         # Per-operation-type latency histograms
-        self._histograms: Dict[OperationType, LatencyHistogram] = {
+        self._histograms: dict[OperationType, LatencyHistogram] = {
             op: LatencyHistogram() for op in OperationType
         }
 
@@ -237,14 +239,10 @@ class MetricsTracker:
         self.total_tokens_used += metrics.total_tokens
         self.total_cost_usd += metrics.total_cost_usd
 
-        # Store in history
+        # Store in history (O(1) eviction via OrderedDict)
         self._request_history[request_id] = metrics
         if len(self._request_history) > self._max_history:
-            oldest_key = min(
-                self._request_history,
-                key=lambda k: self._request_history[k].start_time,
-            )
-            del self._request_history[oldest_key]
+            self._request_history.popitem(last=False)  # Remove oldest entry
 
         # Clear context
         _current_request.set(None)
@@ -261,7 +259,7 @@ class MetricsTracker:
     def start_operation(
         self,
         operation_type: OperationType,
-        metadata: Optional[Dict] = None,
+        metadata: Dict | None = None,
     ) -> OperationMetrics:
         """Start tracking an operation."""
         return OperationMetrics(
@@ -325,7 +323,7 @@ class MetricsTracker:
 
         return total_cost
 
-    def get_request_metrics(self, request_id: str) -> Optional[RequestMetrics]:
+    def get_request_metrics(self, request_id: str) -> RequestMetrics | None:
         """Get metrics for a specific request."""
         return self._request_history.get(request_id)
 

@@ -5,6 +5,8 @@ Provides multiple strategies: fixed-size, sentence-based, recursive,
 and optional semantic chunking. Includes chunk-size monitoring.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -79,7 +81,7 @@ class BaseChunker(ABC):
         self.chunk_overlap = config.chunk_overlap
 
     @abstractmethod
-    def chunk(self, text: str, metadata: Optional[Dict] = None) -> List[Chunk]:
+    def chunk(self, text: str, metadata: Dict | None = None) -> list[Chunk]:
         """
         Split text into chunks.
 
@@ -88,20 +90,20 @@ class BaseChunker(ABC):
             metadata: Optional metadata to attach to each chunk.
 
         Returns:
-            List[Chunk]: Ordered list of non-empty chunks.
+            list[Chunk]: Ordered list of non-empty chunks.
         """
 
     def chunk_with_stats(
         self,
         text: str,
-        metadata: Optional[Dict] = None,
-    ) -> tuple[List[Chunk], ChunkingStats]:
+        metadata: Dict | None = None,
+    ) -> tuple[list[Chunk], ChunkingStats]:
         """Chunk text and return stats."""
         chunks = self.chunk(text, metadata)
         stats = self._compute_stats(chunks)
         return chunks, stats
 
-    def _compute_stats(self, chunks: List[Chunk]) -> ChunkingStats:
+    def _compute_stats(self, chunks: list[Chunk]) -> ChunkingStats:
         if not chunks:
             return ChunkingStats(strategy=self.__class__.__name__)
 
@@ -123,11 +125,11 @@ class FixedSizeChunker(BaseChunker):
     Simple and predictable. Good default for structured text.
     """
 
-    def chunk(self, text: str, metadata: Optional[Dict] = None) -> List[Chunk]:
+    def chunk(self, text: str, metadata: Dict | None = None) -> list[Chunk]:
         if not text or not text.strip():
             return []
 
-        chunks: List[Chunk] = []
+        chunks: list[Chunk] = []
         start = 0
         idx = 0
 
@@ -164,17 +166,23 @@ class SentenceChunker(BaseChunker):
     into chunks up to chunk_size characters.
     """
 
-    _SENTENCE_PATTERN = re.compile(r"(?<=[.!?])\s+")
+    # Improved sentence boundary pattern with negative lookbehinds
+    # for common abbreviations that should not trigger a split.
+    _SENTENCE_PATTERN = re.compile(
+        r"(?<!\bDr)(?<!\bMr)(?<!\bMrs)(?<!\bMs)"
+        r"(?<!\be\.g)(?<!\bi\.e)(?<!\betc)(?<!\bvs)"
+        r"(?<=[.!?])\s+"
+    )
 
-    def chunk(self, text: str, metadata: Optional[Dict] = None) -> List[Chunk]:
+    def chunk(self, text: str, metadata: Dict | None = None) -> list[Chunk]:
         if not text or not text.strip():
             return []
 
         sentences = self._SENTENCE_PATTERN.split(text)
         sentences = [s.strip() for s in sentences if s.strip()]
 
-        chunks: List[Chunk] = []
-        current_sentences: List[str] = []
+        chunks: list[Chunk] = []
+        current_sentences: list[str] = []
         current_size = 0
         char_pos = 0
         chunk_start = 0
@@ -199,7 +207,7 @@ class SentenceChunker(BaseChunker):
 
                 # Handle overlap: keep last N characters worth of sentences
                 if self.chunk_overlap > 0:
-                    overlap_sentences: List[str] = []
+                    overlap_sentences: list[str] = []
                     overlap_size = 0
                     for s in reversed(current_sentences):
                         if overlap_size + len(s) <= self.chunk_overlap:
@@ -249,17 +257,18 @@ class RecursiveChunker(BaseChunker):
         super().__init__(config)
         self.separators = config.separators
 
-    def chunk(self, text: str, metadata: Optional[Dict] = None) -> List[Chunk]:
+    def chunk(self, text: str, metadata: Dict | None = None) -> list[Chunk]:
         if not text or not text.strip():
             return []
 
         raw_chunks = self._split_recursive(text, self.separators)
 
-        chunks: List[Chunk] = []
+        chunks: list[Chunk] = []
         char_pos = 0
 
         for idx, chunk_text in enumerate(raw_chunks):
-            # Find actual position in original text
+            # Advance char_pos to track position rather than re-searching,
+            # which would return wrong positions for repeated substrings.
             pos = text.find(chunk_text, char_pos)
             if pos == -1:
                 pos = char_pos
@@ -273,11 +282,12 @@ class RecursiveChunker(BaseChunker):
                     metadata=dict(metadata) if metadata else {},
                 )
             )
+            # Always advance past this chunk to prevent matching earlier occurrences
             char_pos = pos + len(chunk_text)
 
         return chunks
 
-    def _split_recursive(self, text: str, separators: List[str]) -> List[str]:
+    def _split_recursive(self, text: str, separators: list[str]) -> list[str]:
         """Recursively split text."""
         if len(text) <= self.chunk_size:
             return [text] if text.strip() else []
@@ -304,8 +314,8 @@ class RecursiveChunker(BaseChunker):
             parts = list(text)
 
         # Merge small parts into chunks
-        merged: List[str] = []
-        current_parts: List[str] = []
+        merged: list[str] = []
+        current_parts: list[str] = []
         current_size = 0
 
         for part in parts:
@@ -318,7 +328,7 @@ class RecursiveChunker(BaseChunker):
 
                 # Overlap
                 if self.chunk_overlap > 0:
-                    overlap_parts: List[str] = []
+                    overlap_parts: list[str] = []
                     overlap_size = 0
                     for p in reversed(current_parts):
                         if overlap_size + len(p) <= self.chunk_overlap:
@@ -342,7 +352,7 @@ class RecursiveChunker(BaseChunker):
                 merged.append(merged_text)
 
         # Recursively split any chunks that are still too large
-        result: List[str] = []
+        result: list[str] = []
         for chunk_text in merged:
             if len(chunk_text) > self.chunk_size and remaining_seps:
                 result.extend(self._split_recursive(chunk_text, remaining_seps))
@@ -366,10 +376,10 @@ class ChunkSizeMonitor:
 
     def __init__(self, target_size: int = 512):
         self.target_size = target_size
-        self._all_sizes: List[int] = []
+        self._all_sizes: list[int] = []
         self._total_documents: int = 0
 
-    def record(self, chunks: List[Chunk]) -> None:
+    def record(self, chunks: list[Chunk]) -> None:
         """Record chunk sizes from an operation."""
         self._total_documents += 1
         self._all_sizes.extend(c.size for c in chunks)
@@ -403,9 +413,9 @@ class ChunkSizeMonitor:
         self,
         too_small: int,
         too_large: int,
-        sizes: List[int],
-    ) -> List[str]:
-        recs: List[str] = []
+        sizes: list[int],
+    ) -> list[str]:
+        recs: list[str] = []
         total = len(sizes)
 
         if too_small > total * 0.3:

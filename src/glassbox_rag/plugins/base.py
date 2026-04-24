@@ -4,6 +4,8 @@ Defines contracts for vector stores, databases, and custom extensions.
 The EmbedderPlugin has been unified into core/encoder.py's BaseEncoder.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,7 +17,7 @@ logger = get_logger(__name__)
 class Plugin(ABC):
     """Base class for all plugins."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.config = config
 
     @abstractmethod
@@ -42,11 +44,11 @@ class VectorStorePlugin(Plugin):
     @abstractmethod
     async def add_vectors(
         self,
-        vectors: List[List[float]],
-        ids: Optional[List[str]] = None,
-        contents: Optional[List[str]] = None,
-        metadata: Optional[List[Dict[str, Any]]] = None,
-    ) -> List[str]:
+        vectors: list[list[float]],
+        ids: list[str] | None = None,
+        contents: list[str] | None = None,
+        metadata: list[dict[str, Any] | None] = None,
+    ) -> list[str]:
         """
         Add vectors to the store.
 
@@ -63,10 +65,10 @@ class VectorStorePlugin(Plugin):
     @abstractmethod
     async def search(
         self,
-        query_vector: List[float],
+        query_vector: list[float],
         top_k: int = 5,
         **kwargs: Any,
-    ) -> List[Tuple[str, float, str, Dict[str, Any]]]:
+    ) -> list[tuple[str, float, str, dict[str, Any]]]:
         """
         Search for similar vectors.
 
@@ -79,7 +81,7 @@ class VectorStorePlugin(Plugin):
         """
 
     @abstractmethod
-    async def get_vector(self, vector_id: str) -> Optional[Dict[str, Any]]:
+    async def get_vector(self, vector_id: str) -> dict[str, Any] | None:
         """Get a vector and its metadata by ID."""
 
     @abstractmethod
@@ -99,7 +101,7 @@ class DatabasePlugin(Plugin):
         """Connect to the database."""
 
     @abstractmethod
-    async def insert(self, table: str, data: Dict[str, Any]) -> str:
+    async def insert(self, table: str, data: dict[str, Any]) -> str:
         """
         Insert a record.
 
@@ -112,7 +114,7 @@ class DatabasePlugin(Plugin):
         """
 
     @abstractmethod
-    async def update(self, table: str, record_id: str, data: Dict[str, Any]) -> bool:
+    async def update(self, table: str, record_id: str, data: dict[str, Any]) -> bool:
         """Update a record."""
 
     @abstractmethod
@@ -123,16 +125,16 @@ class DatabasePlugin(Plugin):
     async def query(
         self,
         table: str,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Query records."""
 
     @abstractmethod
     async def search_text(
         self,
-        terms: List[str],
+        terms: list[str],
         top_k: int = 10,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Full-text search across documents."""
 
     @abstractmethod

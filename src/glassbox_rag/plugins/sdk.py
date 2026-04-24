@@ -22,13 +22,19 @@ Usage:
     instance = plugin_registry.create("vector_store", "my_custom_store", config)
 """
 
+from __future__ import annotations
+
 import importlib
+import threading
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from glassbox_rag.plugins.base import Plugin, VectorStorePlugin, DatabasePlugin
 from glassbox_rag.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Module-level lock for thread-safe registry mutations
+_registry_lock = threading.Lock()
 
 
 class PluginRegistry:
@@ -37,10 +43,11 @@ class PluginRegistry:
 
     Manages registration and instantiation of all plugin types.
     Supports both built-in and third-party plugins.
+    Thread-safe for concurrent access in multi-threaded environments.
     """
 
     def __init__(self) -> None:
-        self._plugins: Dict[str, Dict[str, Type[Plugin]]] = {
+        self._plugins: dict[str, dict[str, type[Plugin]]] = {
             "vector_store": {},
             "database": {},
             "encoder": {},
@@ -54,7 +61,7 @@ class PluginRegistry:
         self,
         plugin_type: str,
         name: str,
-        plugin_class: Type[Plugin],
+        plugin_class: type[Plugin],
     ) -> None:
         """
         Register a plugin class.
@@ -72,7 +79,8 @@ class PluginRegistry:
                 f"Unknown plugin type '{plugin_type}'. "
                 f"Available: {list(self._plugins.keys())}"
             )
-        self._plugins[plugin_type][name] = plugin_class
+        with _registry_lock:
+            self._plugins[plugin_type][name] = plugin_class
         logger.info("Registered plugin: %s/%s → %s", plugin_type, name, plugin_class.__name__)
 
     def unregister(self, plugin_type: str, name: str) -> bool:
@@ -82,7 +90,7 @@ class PluginRegistry:
             return True
         return False
 
-    def get(self, plugin_type: str, name: str) -> Optional[Type[Plugin]]:
+    def get(self, plugin_type: str, name: str) -> Optional[type[Plugin]]:
         """Get a registered plugin class."""
         return self._plugins.get(plugin_type, {}).get(name)
 
@@ -90,7 +98,7 @@ class PluginRegistry:
         self,
         plugin_type: str,
         name: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
     ) -> Plugin:
         """
         Create an instance of a registered plugin.
@@ -119,8 +127,8 @@ class PluginRegistry:
         self,
         plugin_type: str,
         name: str,
-        config: Dict[str, Any],
-    ) -> Optional[Plugin]:
+        config: dict[str, Any],
+    ) -> Plugin | None:
         """Create, initialize, and return a plugin. Returns None on init failure."""
         try:
             instance = self.create(plugin_type, name, config)
@@ -132,7 +140,7 @@ class PluginRegistry:
             logger.error("Failed to create plugin %s/%s: %s", plugin_type, name, e)
             return None
 
-    def list_plugins(self, plugin_type: Optional[str] = None) -> Dict[str, List[str]]:
+    def list_plugins(self, plugin_type: str | None = None) -> dict[str, list[str]]:
         """
         List registered plugins.
 
@@ -146,7 +154,7 @@ class PluginRegistry:
             return {plugin_type: list(self._plugins.get(plugin_type, {}).keys())}
         return {pt: list(plugins.keys()) for pt, plugins in self._plugins.items()}
 
-    def list_all_flat(self) -> List[Dict[str, str]]:
+    def list_all_flat(self) -> list[dict[str, str]]:
         """List all plugins as flat list of {type, name, class}."""
         result = []
         for pt, plugins in self._plugins.items():
@@ -186,7 +194,7 @@ class PluginRegistry:
         self._initialized = True
         logger.debug("Registered %d builtin plugins", sum(len(v) for v in self._plugins.values()))
 
-    def load_custom_plugins(self, custom_configs: List[Dict[str, Any]]) -> None:
+    def load_custom_plugins(self, custom_configs: list[dict[str, Any]]) -> None:
         """
         Load custom plugins from config.
 
@@ -239,7 +247,7 @@ def register_plugin(
         class MyStore(VectorStorePlugin):
             ...
     """
-    def decorator(cls: Type[Plugin]) -> Type[Plugin]:
+    def decorator(cls: type[Plugin]) -> type[Plugin]:
         plugin_registry.register(plugin_type, name, cls)
         return cls
     return decorator
@@ -259,9 +267,9 @@ class PluginTestHarness:
     """
 
     @staticmethod
-    async def test_vector_store(store: VectorStorePlugin) -> Dict[str, Any]:
+    async def test_vector_store(store: VectorStorePlugin) -> dict[str, Any]:
         """Run standard tests against a vector store plugin."""
-        results: Dict[str, Any] = {"passed": [], "failed": []}
+        results: dict[str, Any] = {"passed": [], "failed": []}
 
         # Test init
         try:
@@ -316,9 +324,9 @@ class PluginTestHarness:
         return results
 
     @staticmethod
-    async def test_database(db: DatabasePlugin) -> Dict[str, Any]:
+    async def test_database(db: DatabasePlugin) -> dict[str, Any]:
         """Run standard tests against a database plugin."""
-        results: Dict[str, Any] = {"passed": [], "failed": []}
+        results: dict[str, Any] = {"passed": [], "failed": []}
 
         try:
             assert await db.initialize()

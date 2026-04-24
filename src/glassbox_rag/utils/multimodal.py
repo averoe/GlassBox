@@ -4,6 +4,8 @@ Real implementations for text chunking, PDF extraction, and
 OCR-based image text extraction.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
@@ -20,9 +22,9 @@ class MultimodalContent:
     content_type: str  # "text", "image", "pdf", "pptx"
     content: Any  # bytes or string
     encoding: str = "utf-8"
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "content_type": self.content_type,
             "encoding": self.encoding,
@@ -34,7 +36,7 @@ class BaseMultimodalProcessor(ABC):
     """Base class for multimodal processors."""
 
     @abstractmethod
-    async def process(self, content: MultimodalContent) -> List[str]:
+    async def process(self, content: MultimodalContent) -> list[str]:
         """
         Process multimodal content into text chunks.
 
@@ -57,7 +59,7 @@ class ProcessingError(Exception):
 class TextProcessor(BaseMultimodalProcessor):
     """Processor for plain text content."""
 
-    async def process(self, content: MultimodalContent) -> List[str]:
+    async def process(self, content: MultimodalContent) -> list[str]:
         if content.content_type != "text":
             raise ValueError(f"Expected text content, got {content.content_type}")
 
@@ -74,7 +76,7 @@ class TextProcessor(BaseMultimodalProcessor):
 class ImageProcessor(BaseMultimodalProcessor):
     """Processor for image content using OCR."""
 
-    async def process(self, content: MultimodalContent) -> List[str]:
+    async def process(self, content: MultimodalContent) -> list[str]:
         if content.content_type != "image":
             raise ValueError(f"Expected image content, got {content.content_type}")
 
@@ -91,8 +93,13 @@ class ImageProcessor(BaseMultimodalProcessor):
 
             # Try OCR with pytesseract
             try:
+                import asyncio
                 import pytesseract
-                text = pytesseract.image_to_string(image)
+                # pytesseract is a blocking C extension — run in executor
+                loop = asyncio.get_running_loop()
+                text = await loop.run_in_executor(
+                    None, pytesseract.image_to_string, image
+                )
                 if text and text.strip():
                     return [text.strip()]
             except ImportError:
@@ -120,7 +127,7 @@ class ImageProcessor(BaseMultimodalProcessor):
 class PDFProcessor(BaseMultimodalProcessor):
     """Processor for PDF documents using pypdf."""
 
-    async def process(self, content: MultimodalContent) -> List[str]:
+    async def process(self, content: MultimodalContent) -> list[str]:
         if content.content_type != "pdf":
             raise ValueError(f"Expected PDF content, got {content.content_type}")
 
@@ -137,7 +144,7 @@ class PDFProcessor(BaseMultimodalProcessor):
             max_pages = content.metadata.get("max_pages", 100)
             extract_images = content.metadata.get("extract_images", False)
 
-            texts: List[str] = []
+            texts: list[str] = []
             for i, page in enumerate(reader.pages[:max_pages]):
                 page_text = page.extract_text()
                 if page_text and page_text.strip():
@@ -173,7 +180,7 @@ class PDFProcessor(BaseMultimodalProcessor):
 class PPTXProcessor(BaseMultimodalProcessor):
     """Processor for PowerPoint (.pptx) files."""
 
-    async def process(self, content: MultimodalContent) -> List[str]:
+    async def process(self, content: MultimodalContent) -> list[str]:
         if content.content_type != "pptx":
             raise ValueError(f"Expected pptx content, got {content.content_type}")
 
@@ -187,9 +194,9 @@ class PPTXProcessor(BaseMultimodalProcessor):
             else:
                 prs = Presentation(io.BytesIO(pptx_data))
 
-            texts: List[str] = []
+            texts: list[str] = []
             for slide_num, slide in enumerate(prs.slides, 1):
-                slide_texts: List[str] = []
+                slide_texts: list[str] = []
                 for shape in slide.shapes:
                     if shape.has_text_frame:
                         for paragraph in shape.text_frame.paragraphs:
@@ -222,7 +229,7 @@ class MultimodalHandler:
     """
 
     def __init__(self) -> None:
-        self.processors: Dict[str, BaseMultimodalProcessor] = {
+        self.processors: dict[str, BaseMultimodalProcessor] = {
             "text": TextProcessor(),
             "image": ImageProcessor(),
             "pdf": PDFProcessor(),
@@ -238,7 +245,7 @@ class MultimodalHandler:
         self.processors[content_type] = processor
         logger.info("Registered multimodal processor: %s", content_type)
 
-    async def process(self, content: MultimodalContent) -> List[str]:
+    async def process(self, content: MultimodalContent) -> list[str]:
         """
         Process multimodal content.
 
@@ -267,6 +274,6 @@ class MultimodalHandler:
         return results
 
     @property
-    def supported_types(self) -> List[str]:
+    def supported_types(self) -> list[str]:
         """List supported content types."""
         return list(self.processors.keys())

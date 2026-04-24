@@ -5,6 +5,8 @@ Supports JWT token validation and optional OAuth2 integration
 for production API security beyond simple API keys.
 """
 
+from __future__ import annotations
+
 import time
 import hmac
 import hashlib
@@ -36,8 +38,8 @@ class JWTAuth:
         self,
         secret: str,
         algorithm: str = "HS256",
-        issuer: Optional[str] = None,
-        audience: Optional[str] = None,
+        issuer: str | None = None,
+        audience: str | None = None,
         leeway_seconds: int = 30,
     ):
         self.secret = secret
@@ -50,7 +52,7 @@ class JWTAuth:
         self,
         subject: str,
         expires_in: int = 3600,
-        claims: Optional[Dict] = None,
+        claims: Dict | None = None,
     ) -> str:
         """
         Create a signed JWT token.
@@ -64,7 +66,7 @@ class JWTAuth:
             Signed JWT string.
         """
         now = int(time.time())
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "sub": subject,
             "iat": now,
             "exp": now + expires_in,
@@ -78,7 +80,7 @@ class JWTAuth:
 
         return self._encode(payload)
 
-    def validate_token(self, token: str) -> Dict[str, Any]:
+    def validate_token(self, token: str) -> dict[str, Any]:
         """
         Validate and decode a JWT token.
 
@@ -241,10 +243,10 @@ class RedisRateLimiter:
 
 
 def create_auth_middleware(
-    jwt_secret: Optional[str] = None,
-    jwt_issuer: Optional[str] = None,
-    api_keys: Optional[List[str]] = None,
-    excluded_paths: Optional[List[str]] = None,
+    jwt_secret: str | None = None,
+    jwt_issuer: str | None = None,
+    api_keys: list[str] | None = None,
+    excluded_paths: list[str] | None = None,
 ):
     """
     Create a FastAPI middleware that checks JWT or API key auth.

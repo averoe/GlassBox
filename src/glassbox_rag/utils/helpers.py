@@ -1,5 +1,7 @@
 """General helper utilities."""
 
+from __future__ import annotations
+
 import json
 from typing import Any, Dict
 
@@ -36,7 +38,7 @@ def _json_default(obj: Any) -> Any:
     return str(obj)
 
 
-def merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+def merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """
     Deep-merge two dictionaries. Values from override take precedence.
 

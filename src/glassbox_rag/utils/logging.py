@@ -4,6 +4,8 @@ Provides JSON and text formatters, and a consistent logger factory
 so every module uses structured logging instead of print().
 """
 
+from __future__ import annotations
+
 import logging
 import json
 import sys
@@ -63,7 +65,7 @@ _configured = False
 def setup_logging(
     level: str = "INFO",
     log_format: str = "text",
-    stream: Optional[object] = None,
+    stream: object | None = None,
 ) -> None:
     """
     Configure the root glassbox_rag logger.

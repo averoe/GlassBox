@@ -5,6 +5,8 @@ Reranks retrieval results using cross-encoder models for
 higher quality relevance scoring. Supports multiple backends.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,9 +27,9 @@ class BaseReranker(ABC):
     async def rerank(
         self,
         query: str,
-        documents: List[Document],
-        top_k: Optional[int] = None,
-    ) -> List[Document]:
+        documents: list[Document],
+        top_k: int | None = None,
+    ) -> list[Document]:
         """
         Rerank documents by relevance to query.
 
@@ -44,7 +46,7 @@ class BaseReranker(ABC):
 class CohereReranker(BaseReranker):
     """Reranker using Cohere Rerank API."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.api_key = config.get("api_key")
         self.model = config.get("model", "rerank-english-v3.0")
         self._client = None
@@ -65,14 +67,13 @@ class CohereReranker(BaseReranker):
     async def rerank(
         self,
         query: str,
-        documents: List[Document],
-        top_k: Optional[int] = None,
-    ) -> List[Document]:
+        documents: list[Document],
+        top_k: int | None = None,
+    ) -> list[Document]:
         if not self._client or not documents:
             return documents
 
         import asyncio
-        from concurrent.futures import ThreadPoolExecutor
 
         top_n = top_k or len(documents)
         texts = [doc.content for doc in documents]
@@ -85,11 +86,10 @@ class CohereReranker(BaseReranker):
                 top_n=top_n,
             )
 
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor() as executor:
-            response = await loop.run_in_executor(executor, _rerank_sync)
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, _rerank_sync)
 
-        reranked: List[Document] = []
+        reranked: list[Document] = []
         for result in response.results:
             doc = documents[result.index]
             doc.score = result.relevance_score
@@ -105,7 +105,7 @@ class CrossEncoderReranker(BaseReranker):
     Requires: pip install sentence-transformers
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.model_name = config.get("model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
         self._model = None
 
@@ -124,23 +124,21 @@ class CrossEncoderReranker(BaseReranker):
     async def rerank(
         self,
         query: str,
-        documents: List[Document],
-        top_k: Optional[int] = None,
-    ) -> List[Document]:
+        documents: list[Document],
+        top_k: int | None = None,
+    ) -> list[Document]:
         if not self._model or not documents:
             return documents
 
         import asyncio
-        from concurrent.futures import ThreadPoolExecutor
 
         pairs = [(query, doc.content) for doc in documents]
 
         def _predict_sync() -> Any:
             return self._model.predict(pairs)
 
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor() as executor:
-            scores = await loop.run_in_executor(executor, _predict_sync)
+        loop = asyncio.get_running_loop()
+        scores = await loop.run_in_executor(None, _predict_sync)
 
         for doc, score in zip(documents, scores):
             doc.score = float(score)
@@ -156,7 +154,7 @@ class CrossEncoderReranker(BaseReranker):
 class HuggingFaceReranker(BaseReranker):
     """Reranker using Hugging Face Inference API."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.api_key = config.get("api_key")
         self.model = config.get("model", "BAAI/bge-reranker-base")
 
@@ -168,9 +166,9 @@ class HuggingFaceReranker(BaseReranker):
     async def rerank(
         self,
         query: str,
-        documents: List[Document],
-        top_k: Optional[int] = None,
-    ) -> List[Document]:
+        documents: list[Document],
+        top_k: int | None = None,
+    ) -> list[Document]:
         if not documents:
             return documents
 
@@ -217,7 +215,7 @@ _RERANKER_MAP = {
 
 async def create_reranker(
     reranker_type: str,
-    config: Dict[str, Any],
+    config: dict[str, Any],
 ) -> BaseReranker:
     """Create and initialize a reranker."""
     if reranker_type not in _RERANKER_MAP:

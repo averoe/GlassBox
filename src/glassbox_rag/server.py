@@ -6,6 +6,8 @@ Prometheus /metrics endpoint, OTel trace export, and integrated
 visual debugger with telemetry.
 """
 
+from __future__ import annotations
+
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -14,13 +16,14 @@ from typing import Dict, List, Optional
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from glassbox_rag.config import GlassBoxConfig, load_config
 from glassbox_rag.core.engine import GlassBoxEngine
 from glassbox_rag.trace.visualizer import VisualDebugger
 from glassbox_rag.utils.logging import get_logger, setup_logging
+from glassbox_rag import __version__
 
 logger = get_logger(__name__)
 
@@ -37,7 +40,7 @@ class DocumentResult(BaseModel):
 
 class RetrieveRequest(BaseModel):
     query: str
-    encoder: Optional[str] = None
+    encoder: str | None = None
     top_k: int = Field(default=5, ge=1, le=100)
 
 class RetrieveResponse(BaseModel):
@@ -46,11 +49,11 @@ class RetrieveResponse(BaseModel):
     num_results: int
     strategy: str
     execution_time_ms: float
-    documents: List[DocumentResult]
+    documents: list[DocumentResult]
     trace_id: str
 
 class IngestRequest(BaseModel):
-    documents: List[dict]
+    documents: list[dict]
 
 class IngestResponse(BaseModel):
     success: bool
@@ -69,12 +72,21 @@ class UpdateResponse(BaseModel):
     operation_id: str
     message: str
     requires_review: bool
-    review_url: Optional[str] = None
+    review_url: str | None = None
 
 class HealthResponse(BaseModel):
     status: str
     version: str
     components: Dict
+    warnings: list[str] = []
+
+class GenerateRequest(BaseModel):
+    query: str
+    encoder: str | None = None
+    top_k: int = Field(default=5, ge=1, le=100)
+    system_prompt: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
 
 class TokenRequest(BaseModel):
     subject: str
@@ -85,7 +97,7 @@ class TokenRequest(BaseModel):
 #  App Factory
 # ═══════════════════════════════════════════════════════════════════
 
-def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
+def create_app(config: GlassBoxConfig | None = None) -> FastAPI:
     """Create FastAPI app with all integrations."""
     if config is None:
         config = GlassBoxConfig()
@@ -95,12 +107,12 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
     app = FastAPI(
         title="GlassBox RAG",
         description="A transparent, modular RAG framework with integrated telemetry",
-        version="0.2.0",
+        version=__version__,
     )
 
-    engine: Optional[GlassBoxEngine] = None
+    engine: GlassBoxEngine | None = None
     redis_rate_limiter = None
-    memory_rate_limiter_data: Dict[str, list] = defaultdict(list)
+    memory_rate_limiter_data: dict[str, list] = defaultdict(list)
     jwt_auth = None
 
     # ── CORS ──────────────────────────────────────────────────
@@ -138,11 +150,22 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
         if config.auth.enabled and config.auth.jwt_secret:
             from glassbox_rag.utils.auth import JWTAuth
             jwt_auth = JWTAuth(
-                secret=config.auth.jwt_secret,
+                secret=config.auth.jwt_secret.get_secret_value(),
                 issuer=config.auth.jwt_issuer,
                 audience=config.auth.jwt_audience,
             )
             logger.info("JWT authentication enabled")
+
+        # Multi-worker rate-limiter warning
+        if config.server.workers > 1 and config.security.rate_limit_backend == "memory":
+            logger.warning(
+                "⚠ Memory-based rate limiter is per-process — with %d workers, "
+                "effective rate limit is %dx the configured %d RPM. "
+                "Use 'rate_limit_backend: redis' for accurate multi-worker limiting.",
+                config.server.workers,
+                config.server.workers,
+                config.security.rate_limit_rpm,
+            )
 
         logger.info("GlassBox server ready on %s:%d", config.server.host, config.server.port)
 
@@ -204,7 +227,7 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
                     })
             elif config.security.api_key_required:
                 api_key = request.headers.get("X-API-Key", "")
-                if api_key not in config.security.api_keys:
+                if not any(k.get_secret_value() == api_key for k in config.security.api_keys):
                     return JSONResponse(status_code=401, content={
                         "detail": "Invalid or missing authentication",
                     })
@@ -214,7 +237,7 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
                 })
         elif config.security.api_key_required:
             api_key = request.headers.get("X-API-Key", "")
-            if api_key not in config.security.api_keys:
+            if not any(k.get_secret_value() == api_key for k in config.security.api_keys):
                 return JSONResponse(status_code=401, content={
                     "detail": "Invalid API key",
                 })
@@ -226,7 +249,7 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     async def health_check():
         eng = get_engine()
-        components: Dict[str, str] = {
+        components: dict[str, str] = {
             "encoder": "operational" if eng.encoding_layer.encoders else "no_encoders",
             "retriever": "operational",
             "writeback": "operational",
@@ -248,16 +271,26 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
             v in ("operational", "not_configured", "enabled", "disabled")
             for v in components.values()
         )
+
+        warnings = []
+        if config.server.workers > 1 and config.security.rate_limit_backend == "memory":
+            warnings.append(
+                f"Memory-based rate limiter is per-process — with {config.server.workers} "
+                f"workers, effective rate limit is {config.server.workers}x the configured "
+                f"{config.security.rate_limit_rpm} RPM. Use 'rate_limit_backend: redis'."
+            )
+
         return HealthResponse(
             status="healthy" if all_ok else "degraded",
-            version="0.2.0", components=components,
+            version=__version__, components=components,
+            warnings=warnings,
         )
 
     @app.post("/retrieve", response_model=RetrieveResponse)
     async def retrieve(request: RetrieveRequest):
         try:
             eng = get_engine()
-            result, trace_data = await eng.retrieve(
+            result = await eng.retrieve(
                 query=request.query, encoder=request.encoder, top_k=request.top_k,
             )
             return RetrieveResponse(
@@ -268,7 +301,7 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
                     DocumentResult(id=d.id, content=d.content, score=d.score or 0.0, metadata=d.metadata)
                     for d in result.documents
                 ],
-                trace_id=trace_data.get("trace_id", ""),
+                trace_id=result.trace_id,
             )
         except Exception as e:
             logger.error("Retrieve error: %s", e)
@@ -288,6 +321,43 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
         except Exception as e:
             logger.error("Ingest error: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/stream")
+    async def stream_generate(request: GenerateRequest):
+        """SSE endpoint for streaming retrieve + generate."""
+        import json as json_module
+
+        eng = get_engine()
+
+        async def event_generator():
+            try:
+                async for event in eng.stream(
+                    request.query,
+                    encoder=request.encoder,
+                    top_k=request.top_k,
+                    system_prompt=request.system_prompt,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                ):
+                    data = json_module.dumps({
+                        "type": event.type,
+                        "content": event.content,
+                        "metadata": event.metadata,
+                    })
+                    yield f"data: {data}\n\n"
+            except Exception as e:
+                error_data = json_module.dumps({"type": "error", "content": str(e)})
+                yield f"data: {error_data}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.put("/update", response_model=UpdateResponse)
     async def update(request: UpdateRequest):
@@ -322,12 +392,22 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
         return {"traces": eng.list_traces(limit), "count": len(eng.list_traces(limit))}
 
     @app.get("/traces/{trace_id}/visualize")
-    async def visualize_trace(trace_id: str):
+    async def visualize_trace(trace_id: str, format: str = Query("json", regex="^(json|html)$")):
         """Integrated visual debugger with telemetry data."""
         eng = get_engine()
         trace_obj = eng.trace_tracker.get_trace(trace_id)
         if not trace_obj:
             raise HTTPException(status_code=404, detail="Trace not found")
+
+        if format == "html":
+            from fastapi.responses import HTMLResponse
+            html = VisualDebugger.format_telemetry_dashboard(
+                trace_obj,
+                telemetry_status=eng.get_telemetry_status(),
+                metrics_summary=eng.get_metrics_summary(),
+                as_html=True,
+            )
+            return HTMLResponse(content=html)
 
         return {
             "trace_id": trace_id,
@@ -400,7 +480,7 @@ def create_app(config: Optional[GlassBoxConfig] = None) -> FastAPI:
 # ═══════════════════════════════════════════════════════════════════
 
 def run_server(
-    config_path: Optional[Path] = None,
+    config_path: Path | None = None,
     host: str = "0.0.0.0",
     port: int = 8000,
     reload: bool = False,

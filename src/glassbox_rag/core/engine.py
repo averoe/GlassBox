@@ -2,11 +2,17 @@
 Main GlassBox RAG Engine — orchestrates all components.
 
 Coordinates the encoding layer, chunker, retriever, write-back,
-metrics, trace, telemetry, multimodal, and reranker systems.
+metrics, trace, telemetry, multimodal, reranker, hooks, dedup,
+and LLM generation systems.
 """
 
+from __future__ import annotations
+
+import asyncio
 import importlib
-from typing import Any, Dict, List, Optional
+import inspect
+import math
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
 from glassbox_rag.config import GlassBoxConfig
@@ -16,11 +22,14 @@ from glassbox_rag.core.chunker import (
     ChunkingStats,
     create_chunker,
 )
+from glassbox_rag.core.dedup import DocumentDeduplicator
 from glassbox_rag.core.encoder import (
+    EmbeddingCache,
     EncoderError,
     EncoderNotAvailableError,
     ModularEncodingLayer,
 )
+from glassbox_rag.core.hooks import HookManager, HookPoint
 from glassbox_rag.core.metrics import MetricsTracker, OperationType
 from glassbox_rag.core.retriever import (
     AdaptiveRetriever,
@@ -28,6 +37,7 @@ from glassbox_rag.core.retriever import (
     RetrievalResult,
     RetrieverError,
 )
+from glassbox_rag.core.tokens import TokenCounter
 from glassbox_rag.core.writeback import (
     WriteBackManager,
     WriteBackRequest,
@@ -72,6 +82,15 @@ class GlassBoxEngine:
         self.chunk_monitor = ChunkSizeMonitor(target_size=config.chunking.chunk_size)
         self.multimodal_handler = MultimodalHandler()
 
+        # New: Pipeline hooks
+        self.hooks = HookManager()
+
+        # New: Document deduplication
+        self.deduplicator = DocumentDeduplicator(strategy="exact")
+
+        # New: Token counter
+        self.token_counter = TokenCounter()
+
         # Telemetry hub
         self.telemetry = TelemetryHub(
             otel_enabled=config.telemetry.otel_enabled,
@@ -82,21 +101,40 @@ class GlassBoxEngine:
         )
 
         # Plugins (set during initialize)
-        self.vector_store: Optional[VectorStorePlugin] = None
-        self.database: Optional[DatabasePlugin] = None
+        self.vector_store: VectorStorePlugin | None = None
+        self.database: DatabasePlugin | None = None
 
         # Wired up after plugins load
-        self.retriever: Optional[AdaptiveRetriever] = None
-        self.writeback_manager: Optional[WriteBackManager] = None
-        self.reranker: Optional[Any] = None
+        self.retriever: AdaptiveRetriever | None = None
+        self.writeback_manager: WriteBackManager | None = None
+        self.reranker: Any | None = None
+
+        # LLM generator (optional — initialized on first use or via config)
+        self._generator = None
 
         self._initialized = False
+
+    # ── Class constructors ───────────────────────────────────────
+
+    @classmethod
+    def from_env(cls) -> "GlassBoxEngine":
+        """
+        Zero-config constructor — derive all settings from environment.
+
+        Usage:
+            engine = GlassBoxEngine.from_env()
+            await engine.initialize()
+        """
+        return cls(GlassBoxConfig.from_env())
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
     async def initialize(self) -> None:
         """Async initialization — loads plugins, encoders, reranker, and wires everything."""
         logger.info("Initializing GlassBox engine…")
+
+        # 0. Validate config before doing anything expensive
+        self._validate_config()
 
         # 0. Trace backend (Redis/PostgreSQL persistence)
         await self.trace_tracker.init_backend()
@@ -161,6 +199,29 @@ class GlassBoxEngine:
                 "Engine not initialized. Call `await engine.initialize()` first."
             )
 
+    def _validate_config(self) -> None:
+        """Validate configuration at initialize() time to catch errors early."""
+        # Check vector store config
+        vs_type = self.config.vector_store.type
+        vs_config = getattr(self.config.vector_store, vs_type, None)
+        if vs_type and not vs_config:
+            logger.warning(
+                "Vector store type is '%s' but no '%s' configuration block found. "
+                "The vector store plugin will not load. Add a '%s:' block under "
+                "'vector_store:' in your config file, or change 'vector_store.type'.",
+                vs_type, vs_type, vs_type,
+            )
+
+        # Check database config
+        db_type = self.config.database.type
+        db_config = getattr(self.config.database, db_type, None)
+        if db_type and not db_config:
+            logger.warning(
+                "Database type is '%s' but no '%s' configuration block found. "
+                "The database plugin will not load.",
+                db_type, db_type,
+            )
+
     # ── Plugin Loading ────────────────────────────────────────────
 
     async def _init_plugins(self) -> None:
@@ -174,7 +235,7 @@ class GlassBoxEngine:
         if db_config:
             self.database = await self._load_plugin("database", db_type, db_config)
 
-    async def _load_plugin(self, plugin_type: str, name: str, config: Dict) -> Optional[Any]:
+    async def _load_plugin(self, plugin_type: str, name: str, config: Dict) -> Any | None:
         # Try plugin registry first
         from glassbox_rag.plugins.sdk import plugin_registry
         registered = plugin_registry.get(plugin_type, name)
@@ -238,14 +299,14 @@ class GlassBoxEngine:
     async def retrieve(
         self,
         query: str,
-        encoder: Optional[str] = None,
-        top_k: Optional[int] = None,
-    ) -> tuple:
+        encoder: str | None = None,
+        top_k: int | None = None,
+    ) -> RetrievalResult:
         """
         Retrieve documents: encode → retrieve → rerank (optional).
 
         Returns:
-            Tuple of (RetrievalResult, trace_data dict).
+            RetrievalResult with documents, strategy, timing, and trace_id.
         """
         self._ensure_initialized()
 
@@ -261,6 +322,14 @@ class GlassBoxEngine:
         )
 
         try:
+            # 0. Pre-retrieve hook
+            ctx = await self.hooks.run(HookPoint.PRE_RETRIEVE, {
+                "query": query, "encoder": encoder, "top_k": top_k,
+            })
+            query = ctx.get("query", query)
+            encoder = ctx.get("encoder", encoder)
+            top_k = ctx.get("top_k", top_k)
+
             # 1. Encode
             enc_step = self.trace_tracker.start_step("encode_query")
             enc_op = self.metrics_tracker.start_operation(OperationType.ENCODE)
@@ -307,6 +376,13 @@ class GlassBoxEngine:
                     "reranked_count": result.total_results,
                 })
 
+            # 4. Post-retrieve hook
+            ctx = await self.hooks.run(HookPoint.POST_RETRIEVE, {
+                "query": query, "result": result, "documents": result.documents,
+            })
+            result.documents = ctx.get("documents", result.documents)
+            result.total_results = len(result.documents)
+
             # Finalize
             self.trace_tracker.end_step(root.step_id)
             req_metrics = self.metrics_tracker.end_request(request_id)
@@ -321,7 +397,10 @@ class GlassBoxEngine:
             if self.telemetry.prometheus:
                 self.telemetry.prometheus.dec_active()
 
-            return result, trace.to_dict()
+            # Attach trace_id to result for easy downstream access
+            result.trace_id = trace.trace_id
+
+            return result
 
         except Exception as e:
             self.trace_tracker.end_step(root.step_id, error=str(e))
@@ -329,16 +408,194 @@ class GlassBoxEngine:
             self.metrics_tracker.end_request(request_id)
             if self.telemetry.prometheus:
                 self.telemetry.prometheus.dec_active()
+
+            # Fire error hooks
+            await self.hooks.run(HookPoint.ON_ERROR, {
+                "operation": "retrieve", "query": query, "error": e,
+            })
+
             logger.error("Retrieve failed: %s", e)
             raise
+
+    # ── Generate (LLM) ────────────────────────────────────────────
+
+    async def generate(
+        self,
+        query: str,
+        *,
+        encoder: str | None = None,
+        top_k: int | None = None,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """
+        Retrieve + Generate: end-to-end RAG pipeline.
+
+        Retrieves relevant documents, then generates a response
+        using the configured LLM backend.
+
+        Returns:
+            Dict with 'answer', 'sources', 'retrieval', and 'generation' details.
+        """
+        self._ensure_initialized()
+        await self._ensure_generator()
+
+        # Retrieve
+        retrieval_result = await self.retrieve(query, encoder=encoder, top_k=top_k)
+
+        # Extract document texts for context
+        context_docs = [doc.content for doc in retrieval_result.documents]
+
+        # Pre-generate hook
+        ctx = await self.hooks.run(HookPoint.PRE_GENERATE, {
+            "query": query,
+            "context_documents": context_docs,
+            "retrieval_result": retrieval_result,
+        })
+        context_docs = ctx.get("context_documents", context_docs)
+
+        # Generate
+        gen_result = await self._generator.generate(
+            query, context_docs,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        # Post-generate hook
+        ctx = await self.hooks.run(HookPoint.POST_GENERATE, {
+            "query": query,
+            "answer": gen_result.text,
+            "generation_result": gen_result,
+            "retrieval_result": retrieval_result,
+        })
+
+        return {
+            "answer": ctx.get("answer", gen_result.text),
+            "sources": [d.to_dict() for d in retrieval_result.documents],
+            "retrieval": retrieval_result.to_dict(),
+            "generation": gen_result.to_dict(),
+            "trace_id": retrieval_result.trace_id,
+        }
+
+    async def stream(
+        self,
+        query: str,
+        *,
+        encoder: str | None = None,
+        top_k: int | None = None,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[Any]:
+        """
+        Streaming retrieve + generate with structured events.
+
+        Retrieves documents, then streams the LLM response as StreamEvent objects.
+
+        Usage:
+            async for event in engine.stream("What is RAG?"):
+                if event.type == "token":
+                    print(event.content, end="", flush=True)
+                elif event.type == "metadata":
+                    print(f"Sources: {event.metadata}")
+                elif event.type == "done":
+                    print(f"\nDone: {event.metadata}")
+        """
+        self._ensure_initialized()
+        await self._ensure_generator()
+
+        from glassbox_rag.core.generator import StreamEvent
+
+        retrieval_result = await self.retrieve(query, encoder=encoder, top_k=top_k)
+        context_docs = [doc.content for doc in retrieval_result.documents]
+
+        # Pre-generate hook
+        ctx = await self.hooks.run(HookPoint.PRE_GENERATE, {
+            "query": query,
+            "context_documents": context_docs,
+            "retrieval_result": retrieval_result,
+        })
+        context_docs = ctx.get("context_documents", context_docs)
+
+        # Emit retrieval metadata event
+        yield StreamEvent(
+            type="metadata",
+            metadata={
+                "trace_id": retrieval_result.trace_id,
+                "strategy": retrieval_result.strategy,
+                "num_sources": len(retrieval_result.documents),
+                "sources": [d.to_dict() for d in retrieval_result.documents],
+            },
+        )
+
+        # Stream LLM tokens
+        async for event in self._generator.stream(
+            query, context_docs,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ):
+            yield event
+
+    async def _ensure_generator(self) -> None:
+        """Lazily initialize the LLM generator from config (preferred) or env vars."""
+        if self._generator is not None:
+            return
+
+        from glassbox_rag.core.generator import LLMGenerator, GenerationConfig
+
+        gen_cfg = self.config.generation
+        backend_type = gen_cfg.backend
+        backend_config: dict[str, Any] = {}
+
+        # Config-driven (preferred)
+        if backend_type and gen_cfg.api_key:
+            backend_config["api_key"] = gen_cfg.api_key.get_secret_value()
+            backend_config["model"] = gen_cfg.model
+            if gen_cfg.base_url:
+                backend_config["base_url"] = gen_cfg.base_url
+        elif backend_type == "ollama":
+            backend_config["base_url"] = gen_cfg.base_url or "http://localhost:11434"
+            backend_config["model"] = gen_cfg.model
+        else:
+            # Fallback: auto-detect from env vars
+            import os
+            if os.getenv("OPENAI_API_KEY"):
+                backend_type = "openai"
+                backend_config["api_key"] = os.environ["OPENAI_API_KEY"]
+            elif os.getenv("OLLAMA_BASE_URL"):
+                backend_type = "ollama"
+                backend_config["base_url"] = os.environ["OLLAMA_BASE_URL"]
+            else:
+                raise EngineError(
+                    "No LLM backend configured for generation. "
+                    "Set 'generation.backend' in config, or set "
+                    "OPENAI_API_KEY / OLLAMA_BASE_URL environment variable."
+                )
+
+        generation_config = GenerationConfig(
+            model=gen_cfg.model,
+            temperature=gen_cfg.temperature,
+            max_tokens=gen_cfg.max_tokens,
+            system_prompt=gen_cfg.system_prompt,
+        )
+
+        self._generator = LLMGenerator(
+            backend_type=backend_type,
+            backend_config=backend_config,
+            generation_config=generation_config,
+        )
+        await self._generator.initialize()
 
     # ── Ingest ────────────────────────────────────────────────────
 
     async def ingest(
         self,
-        documents: List[Dict[str, Any]],
-        encoder: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        documents: list[dict[str, Any]],
+        encoder: str | None = None,
+    ) -> dict[str, Any]:
         """
         Ingest documents (text or multimodal): extract → chunk → encode → store.
 
@@ -366,7 +623,7 @@ class GlassBoxEngine:
         try:
             # Step 0: Multimodal extraction (if needed)
             extract_step = self.trace_tracker.start_step("extract_content")
-            text_docs: List[Dict[str, Any]] = []
+            text_docs: list[dict[str, Any]] = []
 
             for i, doc in enumerate(documents):
                 content_type = doc.get("content_type", "text")
@@ -414,9 +671,9 @@ class GlassBoxEngine:
             chunk_step = self.trace_tracker.start_step("chunk_documents")
             chunk_op = self.metrics_tracker.start_operation(OperationType.CHUNK)
 
-            all_chunks: List[Chunk] = []
-            all_texts: List[str] = []
-            all_meta: List[Dict] = []
+            all_chunks: list[Chunk] = []
+            all_texts: list[str] = []
+            all_meta: list[Dict] = []
 
             for doc in text_docs:
                 meta = doc.get("metadata", {})
@@ -451,7 +708,7 @@ class GlassBoxEngine:
             store_step = self.trace_tracker.start_step("store_vectors")
             store_op = self.metrics_tracker.start_operation(OperationType.INGEST)
 
-            doc_ids: List[str] = []
+            doc_ids: list[str] = []
             if self.vector_store:
                 doc_ids = await self.vector_store.add_vectors(
                     vectors=embeddings.tolist(),
@@ -512,8 +769,94 @@ class GlassBoxEngine:
             self.metrics_tracker.end_request(request_id)
             if self.telemetry.prometheus:
                 self.telemetry.prometheus.dec_active()
+            await self.hooks.run(HookPoint.ON_ERROR, {
+                "operation": "ingest", "error": e,
+            })
             logger.error("Ingest failed: %s", e)
             raise
+
+    # ── Batch Ingest (with progress) ──────────────────────────────
+
+    async def batch_ingest(
+        self,
+        documents: list[dict[str, Any]],
+        *,
+        batch_size: int = 50,
+        encoder: str | None = None,
+        on_progress: Optional[
+            Union[
+                Callable[[int, int, dict[str, Any]], None],
+                Callable[[int, int, dict[str, Any]], Any],  # async callable
+            ]
+        ] = None,
+        deduplicate: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Async batch ingest with progress reporting.
+
+        Splits documents into batches and reports progress after each batch.
+
+        Args:
+            documents: Full list of documents to ingest.
+            batch_size: Number of documents per batch.
+            encoder: Encoder name override.
+            on_progress: Callback(batch_num, total_batches, batch_result).
+            deduplicate: Whether to run deduplication before ingest.
+
+        Returns:
+            Aggregated ingest result.
+        """
+        self._ensure_initialized()
+
+        if not documents:
+            raise EngineError("No documents provided for batch ingestion")
+
+        # Deduplicate
+        dupes: list = []
+        if deduplicate:
+            unique_docs, dupes = self.deduplicator.deduplicate(documents)
+            if dupes:
+                logger.info(
+                    "Batch ingest: removed %d duplicates, %d unique documents remain",
+                    len(dupes), len(unique_docs),
+                )
+            documents = unique_docs
+
+        total_batches = math.ceil(len(documents) / batch_size)
+        all_results: list[dict[str, Any]] = []
+        total_chunks = 0
+        total_doc_ids: list[str] = []
+
+        for batch_num in range(total_batches):
+            start = batch_num * batch_size
+            end = min(start + batch_size, len(documents))
+            batch = documents[start:end]
+
+            result = await self.ingest(batch, encoder=encoder)
+            all_results.append(result)
+            total_chunks += result.get("chunks_created", 0)
+            total_doc_ids.extend(result.get("document_ids", []))
+
+            if on_progress:
+                if inspect.iscoroutinefunction(on_progress):
+                    await on_progress(batch_num + 1, total_batches, result)
+                else:
+                    on_progress(batch_num + 1, total_batches, result)
+
+            logger.info(
+                "Batch %d/%d ingested: %d docs → %d chunks",
+                batch_num + 1, total_batches,
+                len(batch), result.get("chunks_created", 0),
+            )
+
+        return {
+            "success": True,
+            "documents_ingested": len(documents),
+            "chunks_created": total_chunks,
+            "document_ids": total_doc_ids,
+            "batches": total_batches,
+            "duplicates_removed": len(dupes) if deduplicate else 0,
+        }
 
     # ── Update ────────────────────────────────────────────────────
 
@@ -521,7 +864,7 @@ class GlassBoxEngine:
         self,
         document_id: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         confidence_score: float = 1.0,
     ) -> WriteBackResult:
         """Update a document with write-back protection."""
@@ -567,18 +910,33 @@ class GlassBoxEngine:
 
     # ── Observability ─────────────────────────────────────────────
 
-    def get_trace(self, trace_id: str) -> Optional[Dict[str, Any]]:
+    def get_trace(self, trace_id: str) -> dict[str, Any] | None:
         trace = self.trace_tracker.get_trace(trace_id)
         return trace.to_dict() if trace else None
 
-    def list_traces(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_traces(self, limit: int = 100) -> list[dict[str, Any]]:
         return [t.to_dict() for t in self.trace_tracker.list_traces(limit)]
 
-    def get_metrics_summary(self) -> Dict[str, Any]:
+    def get_metrics_summary(self) -> dict[str, Any]:
         return self.metrics_tracker.get_summary()
 
-    def get_chunk_report(self) -> Dict[str, Any]:
+    def get_chunk_report(self) -> dict[str, Any]:
         return self.chunk_monitor.get_report()
 
-    def get_telemetry_status(self) -> Dict[str, Any]:
+    def get_telemetry_status(self) -> dict[str, Any]:
         return self.telemetry.get_telemetry_status()
+
+    def get_cache_stats(self) -> dict[str, Any]:
+        """Return embedding cache statistics."""
+        return self.encoding_layer.cache.stats()
+
+    def get_hook_info(self) -> dict[str, Any]:
+        """Return registered hook information."""
+        return {
+            "total_hooks": self.hooks.total_hooks,
+            "hooks": self.hooks.list_hooks(),
+        }
+
+    def get_token_counter(self) -> TokenCounter:
+        """Return the engine's token counter."""
+        return self.token_counter

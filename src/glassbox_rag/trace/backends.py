@@ -5,6 +5,8 @@ Allows persisting traces beyond in-memory storage for
 production deployments.
 """
 
+from __future__ import annotations
+
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -26,11 +28,11 @@ class TraceBackend(ABC):
         """Store a completed trace."""
 
     @abstractmethod
-    async def get_trace(self, trace_id: str) -> Optional[Dict]:
+    async def get_trace(self, trace_id: str) -> Dict | None:
         """Retrieve a trace by ID."""
 
     @abstractmethod
-    async def list_traces(self, limit: int = 100) -> List[Dict]:
+    async def list_traces(self, limit: int = 100) -> list[Dict]:
         """List recent traces."""
 
     @abstractmethod
@@ -50,7 +52,7 @@ class MemoryBackend(TraceBackend):
     """In-memory trace storage (default)."""
 
     def __init__(self, max_traces: int = 10000):
-        self._traces: Dict[str, Dict] = {}
+        self._traces: dict[str, Dict] = {}
         self._max = max_traces
 
     async def initialize(self) -> bool:
@@ -62,10 +64,10 @@ class MemoryBackend(TraceBackend):
             oldest = min(self._traces, key=lambda k: self._traces[k].get("start_time", ""))
             del self._traces[oldest]
 
-    async def get_trace(self, trace_id: str) -> Optional[Dict]:
+    async def get_trace(self, trace_id: str) -> Dict | None:
         return self._traces.get(trace_id)
 
-    async def list_traces(self, limit: int = 100) -> List[Dict]:
+    async def list_traces(self, limit: int = 100) -> list[Dict]:
         sorted_traces = sorted(
             self._traces.values(),
             key=lambda t: t.get("start_time", ""),
@@ -90,7 +92,7 @@ class RedisBackend(TraceBackend):
     Uses sorted sets for ordering by timestamp and hash maps for data.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.host = config.get("host", "localhost")
         self.port = config.get("port", 6379)
         self.db = config.get("db", 0)
@@ -133,7 +135,7 @@ class RedisBackend(TraceBackend):
             {trace_id: hash(start_time) & 0xFFFFFFFF},
         )
 
-    async def get_trace(self, trace_id: str) -> Optional[Dict]:
+    async def get_trace(self, trace_id: str) -> Dict | None:
         if not self._client:
             return None
         key = f"{self.prefix}{trace_id}"
@@ -142,7 +144,7 @@ class RedisBackend(TraceBackend):
             return json.loads(data)
         return None
 
-    async def list_traces(self, limit: int = 100) -> List[Dict]:
+    async def list_traces(self, limit: int = 100) -> list[Dict]:
         if not self._client:
             return []
         ids = await self._client.zrevrange(f"{self.prefix}index", 0, limit - 1)
@@ -183,7 +185,7 @@ class PostgreSQLBackend(TraceBackend):
     Uses JSONB for trace data with indexed trace_id and timestamp.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.host = config.get("host", "localhost")
         self.port = config.get("port", 5432)
         self.database = config.get("database", "glassbox_db")
@@ -254,7 +256,7 @@ class PostgreSQLBackend(TraceBackend):
                 json.dumps(trace_data, default=str),
             )
 
-    async def get_trace(self, trace_id: str) -> Optional[Dict]:
+    async def get_trace(self, trace_id: str) -> Dict | None:
         if not self._pool:
             return None
         async with self._pool.acquire() as conn:
@@ -266,7 +268,7 @@ class PostgreSQLBackend(TraceBackend):
                 return json.loads(row["trace_data"])
         return None
 
-    async def list_traces(self, limit: int = 100) -> List[Dict]:
+    async def list_traces(self, limit: int = 100) -> list[Dict]:
         if not self._pool:
             return []
         async with self._pool.acquire() as conn:
@@ -305,7 +307,7 @@ class PostgreSQLBackend(TraceBackend):
 
 async def create_trace_backend(
     backend_type: str,
-    config: Dict[str, Any],
+    config: dict[str, Any],
 ) -> TraceBackend:
     """Create and initialize a trace backend."""
     backends = {

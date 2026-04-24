@@ -6,6 +6,8 @@ in the RAG pipeline. Uses contextvars so each async request gets
 its own trace context — no cross-request corruption.
 """
 
+from __future__ import annotations
+
 import contextvars
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -22,7 +24,7 @@ logger = get_logger(__name__)
 _current_trace: contextvars.ContextVar[Optional["Trace"]] = contextvars.ContextVar(
     "current_trace", default=None
 )
-_current_step_stack: contextvars.ContextVar[List["TraceStep"]] = contextvars.ContextVar(
+_current_step_stack: contextvars.ContextVar[list["TraceStep"]] = contextvars.ContextVar(
     "current_step_stack", default=[]
 )
 
@@ -43,21 +45,21 @@ class TraceStep:
     step_id: str
     name: str
     start_time: datetime
-    end_time: Optional[datetime] = None
+    end_time: datetime | None = None
     level: TraceLevel = TraceLevel.INFO
 
     # Input/Output
-    input_data: Dict[str, Any] = field(default_factory=dict)
-    output_data: Dict[str, Any] = field(default_factory=dict)
+    input_data: dict[str, Any] = field(default_factory=dict)
+    output_data: dict[str, Any] = field(default_factory=dict)
 
     # Nested steps
-    children: List["TraceStep"] = field(default_factory=list)
+    children: list["TraceStep"] = field(default_factory=list)
 
     # Error information
-    error: Optional[str] = None
+    error: str | None = None
 
     # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def get_duration_ms(self) -> float:
         """Get step duration in milliseconds."""
@@ -70,7 +72,7 @@ class TraceStep:
         """Add a child step."""
         self.children.append(step)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "step_id": self.step_id,
@@ -94,16 +96,16 @@ class Trace:
     trace_id: str
     request_id: str
     start_time: datetime
-    end_time: Optional[datetime] = None
+    end_time: datetime | None = None
 
     # Root step
-    root_step: Optional[TraceStep] = None
+    root_step: TraceStep | None = None
 
     # Flat list for quick lookup
-    steps: Dict[str, TraceStep] = field(default_factory=dict)
+    steps: dict[str, TraceStep] = field(default_factory=dict)
 
     # Request metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def get_duration_ms(self) -> float:
         """Get total trace duration."""
@@ -112,7 +114,7 @@ class Trace:
             return round(delta * 1000, 3)
         return 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "trace_id": self.trace_id,
@@ -130,7 +132,7 @@ class Trace:
         if not self.root_step:
             return "No trace data"
 
-        lines: List[str] = []
+        lines: list[str] = []
         lines.append(f"╔══ Trace {self.trace_id[:12]}…")
         lines.append(f"║  Request: {self.request_id[:12]}…")
         lines.append(f"║  Duration: {self.get_duration_ms():.2f}ms")
@@ -142,7 +144,7 @@ class Trace:
         lines.append("╚══════════════════════════════════════")
         return "\n".join(lines)
 
-    def _visualize_step(self, step: TraceStep, lines: List[str], depth: int) -> None:
+    def _visualize_step(self, step: TraceStep, lines: list[str], depth: int) -> None:
         """Recursively visualize steps."""
         indent = "║  " + "  " * depth
         is_last = depth == 0
@@ -178,7 +180,7 @@ class TraceTracker:
         self.sample_rate = config.trace.sample_rate
 
         # In-memory cache (always present for fast access)
-        self._traces: Dict[str, Trace] = {}
+        self._traces: dict[str, Trace] = {}
         self._max_stored = 10000
 
         # Persistent backend (initialized async via init_backend)
@@ -245,13 +247,10 @@ class TraceTracker:
         if self._backend is not None:
             import asyncio
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self._persist_trace(trace))
-                else:
-                    asyncio.run(self._persist_trace(trace))
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._persist_trace(trace))
             except RuntimeError:
-                pass  # No event loop — skip persistence
+                pass  # No running event loop — skip persistence
 
         _current_trace.set(None)
         _current_step_stack.set([])
@@ -273,8 +272,8 @@ class TraceTracker:
     def start_step(
         self,
         name: str,
-        input_data: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        input_data: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> TraceStep:
         """Start a new trace step in the current context."""
         if not self.enabled:
@@ -313,8 +312,8 @@ class TraceTracker:
     def end_step(
         self,
         step_id: str,
-        output_data: Optional[Dict[str, Any]] = None,
-        error: Optional[str] = None,
+        output_data: dict[str, Any] | None = None,
+        error: str | None = None,
     ) -> None:
         """End a trace step in the current context."""
         if not self.enabled:
@@ -338,11 +337,11 @@ class TraceTracker:
         new_stack = list(stack[:-1])
         _current_step_stack.set(new_stack)
 
-    def get_trace(self, trace_id: str) -> Optional[Trace]:
+    def get_trace(self, trace_id: str) -> Trace | None:
         """Retrieve a stored trace (from memory cache)."""
         return self._traces.get(trace_id)
 
-    async def get_trace_persistent(self, trace_id: str) -> Optional[Dict]:
+    async def get_trace_persistent(self, trace_id: str) -> Dict | None:
         """Retrieve from persistent backend (if not in memory)."""
         trace = self._traces.get(trace_id)
         if trace:
@@ -351,7 +350,7 @@ class TraceTracker:
             return await self._backend.get_trace(trace_id)
         return None
 
-    def list_traces(self, limit: int = 100) -> List[Trace]:
+    def list_traces(self, limit: int = 100) -> list[Trace]:
         """List stored traces from memory, most recent first."""
         sorted_traces = sorted(
             self._traces.values(),
@@ -364,7 +363,7 @@ class TraceTracker:
         """Clear all stored traces."""
         self._traces.clear()
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get tracker statistics."""
         traces = list(self._traces.values())
         if not traces:
@@ -387,7 +386,7 @@ class TraceTracker:
             self._backend = None
 
 
-def _safe_serialize(data: Dict[str, Any]) -> Dict[str, Any]:
+def _safe_serialize(data: dict[str, Any]) -> dict[str, Any]:
     """Safely serialize data dict, converting non-serializable values."""
     result = {}
     for key, value in data.items():
