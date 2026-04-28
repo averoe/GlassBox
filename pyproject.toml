@@ -166,7 +166,12 @@ where = ["src"]
 include = ["glassbox_rag*"]
 
 [tool.setuptools.package-data]
-glassbox_rag = ["py.typed"]
+glassbox_rag = [
+    "py.typed",
+    "ui/static/*.js",
+    "ui/static/*.css",
+    "ui/templates/*.html",
+]
 
 # Version is set in [project].version and synced with __init__.__version__
 

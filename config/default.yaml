@@ -135,6 +135,14 @@ metrics:
     embedding_1k_tokens: 0.00002
     llm_1k_tokens: 0.001
 
+# Telemetry & Observability Export
+telemetry:
+  otel_enabled: false
+  otel_exporter: "console"  # console, otlp, jaeger
+  # otel_endpoint: "http://localhost:4317"
+  prometheus_enabled: true
+  service_name: "glassbox-rag"
+
 # Security & Authentication
 security:
   api_key_required: false
@@ -144,8 +152,7 @@ security:
   cors:
     enabled: true
     origins:
-      - "http://localhost:3000"
-      - "http://localhost:8000"
+      - "*"
 
 # Plugin Registry
 plugins:

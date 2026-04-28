@@ -25,8 +25,8 @@ class GlassBoxDashboard {
     setupNavigation() {
         document.querySelectorAll('.nav-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const page = e.target.dataset.page;
-                this.switchPage(page);
+                const page = e.currentTarget.dataset.page;
+                if (page) this.switchPage(page);
             });
         });
     }
@@ -97,16 +97,16 @@ class GlassBoxDashboard {
 
     async loadOverviewData() {
         try {
-            const [healthRes, metricsRes] = await Promise.all([
+            const [healthRes, metricsJsonRes] = await Promise.all([
                 fetch(`${this.apiBase}/health`),
-                fetch(`${this.apiBase}/metrics/prometheus`)
+                fetch(`${this.apiBase}/metrics`)
             ]);
 
             const health = await healthRes.json();
-            const metrics = await metricsRes.text();
+            const metricsJson = await metricsJsonRes.json();
 
             this.updateHealthStatus(health);
-            this.updateMetrics(metrics);
+            this.updateMetricsFromJson(metricsJson);
             this.updateComponents(health.components);
             this.updateActivityFeed();
         } catch (error) {
@@ -134,46 +134,69 @@ class GlassBoxDashboard {
         text.textContent = isHealthy ? 'Healthy' : 'Degraded';
     }
 
-    updateMetrics(prometheusData) {
-        // Parse Prometheus metrics and update dashboard
-        const metrics = this.parsePrometheusMetrics(prometheusData);
+    updateMetricsFromJson(data) {
+        // Update dashboard from /metrics JSON response
+        const totalReq = data.total_requests || data.request_count || 0;
+        const totalCost = data.total_cost_usd || data.total_cost || 0;
+        const totalTokens = data.total_tokens || 0;
 
+        // Compute avg latency from histograms if available
+        let avgLatency = 0;
+        if (data.histograms) {
+            let totalMs = 0, totalCount = 0;
+            for (const op of Object.values(data.histograms)) {
+                totalMs += (op.mean_ms || 0) * (op.count || 0);
+                totalCount += op.count || 0;
+            }
+            avgLatency = totalCount > 0 ? Math.round(totalMs / totalCount) : 0;
+        }
+
+        document.getElementById('totalRequests').textContent = totalReq.toLocaleString();
+        document.getElementById('avgLatency').textContent = `${avgLatency}ms`;
+        document.getElementById('totalTokens').textContent = totalTokens.toLocaleString();
+        document.getElementById('totalCost').textContent = `$${totalCost.toFixed(4)}`;
+
+        // Store previous values for trend calculation
+        this._prevMetrics = this._prevMetrics || {};
+        const trends = {
+            requestsTrend: { prev: this._prevMetrics.totalReq, curr: totalReq },
+            latencyTrend: { prev: this._prevMetrics.avgLatency, curr: avgLatency },
+            tokensTrend: { prev: this._prevMetrics.totalTokens, curr: totalTokens },
+            costTrend: { prev: this._prevMetrics.totalCost, curr: totalCost },
+        };
+        Object.entries(trends).forEach(([id, { prev, curr }]) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (prev == null || prev === 0) {
+                el.textContent = '+0%';
+                el.className = 'metric-trend positive';
+            } else {
+                const pct = (((curr - prev) / prev) * 100).toFixed(1);
+                el.textContent = `${pct >= 0 ? '+' : ''}${pct}%`;
+                el.className = `metric-trend ${pct >= 0 ? 'positive' : 'negative'}`;
+            }
+        });
+        this._prevMetrics = { totalReq, avgLatency, totalTokens, totalCost };
+    }
+
+    updateMetrics(prometheusData) {
+        // Fallback: Parse Prometheus text metrics
+        const metrics = this.parsePrometheusMetrics(prometheusData);
         document.getElementById('totalRequests').textContent = metrics.totalRequests || '0';
         document.getElementById('avgLatency').textContent = `${(metrics.avgLatency || 0).toFixed(0)}ms`;
         document.getElementById('totalTokens').textContent = (metrics.totalTokens || 0).toLocaleString();
         document.getElementById('totalCost').textContent = `$${(metrics.totalCost || 0).toFixed(4)}`;
-
-        // Update trends (mock data for now)
-        this.updateTrends();
     }
 
     parsePrometheusMetrics(data) {
-        // Simple Prometheus metrics parser
         const lines = data.split('\n');
         const metrics = {};
-
         lines.forEach(line => {
             if (line.startsWith('#') || !line.trim()) return;
-
             const [name, value] = line.split(' ');
-            if (name && value) {
-                metrics[name] = parseFloat(value) || 0;
-            }
+            if (name && value) metrics[name] = parseFloat(value) || 0;
         });
-
         return metrics;
-    }
-
-    updateTrends() {
-        // Mock trend updates
-        const trends = ['requestsTrend', 'latencyTrend', 'tokensTrend', 'costTrend'];
-        trends.forEach(trendId => {
-            const element = document.getElementById(trendId);
-            const isPositive = Math.random() > 0.5;
-            const change = (Math.random() * 20).toFixed(1);
-            element.textContent = `${isPositive ? '+' : '-'}${change}%`;
-            element.className = `metric-trend ${isPositive ? 'positive' : 'negative'}`;
-        });
     }
 
     updateComponents(components) {
@@ -196,29 +219,45 @@ class GlassBoxDashboard {
         });
     }
 
-    updateActivityFeed() {
+    async updateActivityFeed() {
         const container = document.getElementById('activityFeed');
-        const activities = [
-            { icon: 'search', title: 'Query processed', time: '2 minutes ago' },
-            { icon: 'upload', title: 'Documents ingested', time: '5 minutes ago' },
-            { icon: 'zap', title: 'Model inference completed', time: '8 minutes ago' },
-            { icon: 'database', title: 'Vector store updated', time: '12 minutes ago' }
-        ];
+        try {
+            const res = await fetch(`${this.apiBase}/traces?limit=5`);
+            const data = await res.json();
+            const traces = data.traces || [];
 
-        container.innerHTML = activities.map(activity => `
-            <div class="activity-item">
-                <div class="activity-icon">
-                    <i data-lucide="${activity.icon}"></i>
-                </div>
-                <div class="activity-content">
-                    <div class="activity-title">${activity.title}</div>
-                    <div class="activity-time">${activity.time}</div>
-                </div>
-            </div>
-        `).join('');
+            if (traces.length === 0) {
+                container.innerHTML = '<div class="activity-item"><div class="activity-content"><div class="activity-title" style="color:var(--text-muted)">No recent activity</div></div></div>';
+                return;
+            }
 
-        // Re-initialize Lucide icons for new elements
-        lucide.createIcons();
+            container.innerHTML = traces.map(trace => {
+                const name = (trace.root_step && trace.root_step.name) || 'request';
+                const icon = name.includes('retrieve') ? 'search' : name.includes('ingest') ? 'upload' : 'zap';
+                const dur = trace.duration_ms ? `${trace.duration_ms.toFixed(0)}ms` : '';
+                const timeAgo = this._timeAgo(trace.start_time);
+                return `
+                    <div class="activity-item">
+                        <div class="activity-icon"><i data-lucide="${icon}"></i></div>
+                        <div class="activity-content">
+                            <div class="activity-title">${name} ${dur ? '(' + dur + ')' : ''}</div>
+                            <div class="activity-time">${timeAgo}</div>
+                        </div>
+                    </div>`;
+            }).join('');
+            lucide.createIcons();
+        } catch (e) {
+            container.innerHTML = '<div class="activity-item"><div class="activity-content"><div class="activity-title" style="color:var(--text-muted)">Unable to load activity</div></div></div>';
+        }
+    }
+
+    _timeAgo(isoString) {
+        if (!isoString) return '';
+        const diff = Math.round((Date.now() - new Date(isoString).getTime()) / 1000);
+        if (diff < 60) return `${diff}s ago`;
+        if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
+        if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
+        return `${Math.round(diff / 86400)}d ago`;
     }
 
     async loadPipelineData() {
@@ -394,27 +433,21 @@ class GlassBoxDashboard {
 
     async loadTraceData() {
         try {
-            // Mock trace data - in real implementation, fetch from API
-            this.traces = [
-                {
-                    trace_id: 'abc123',
-                    query: 'What is RAG?',
-                    duration_ms: 234,
-                    status: 'success',
-                    timestamp: new Date().toISOString()
-                },
-                {
-                    trace_id: 'def456',
-                    query: 'How does vector search work?',
-                    duration_ms: 189,
-                    status: 'success',
-                    timestamp: new Date(Date.now() - 300000).toISOString()
-                }
-            ];
-
+            const res = await fetch(`${this.apiBase}/traces?limit=50`);
+            const data = await res.json();
+            this.traces = (data.traces || []).map(t => ({
+                trace_id: t.id || t.trace_id,
+                query: (t.root_step && t.root_step.input_data && t.root_step.input_data.query) || 'N/A',
+                duration_ms: t.duration_ms || 0,
+                status: (t.root_step && t.root_step.error) ? 'error' : 'success',
+                timestamp: t.start_time,
+                steps: t.steps || [],
+            }));
             this.renderTraceList();
         } catch (error) {
             console.error('Failed to load trace data:', error);
+            this.traces = [];
+            this.renderTraceList();
         }
     }
 
@@ -438,17 +471,37 @@ class GlassBoxDashboard {
 
         this.currentTrace = trace;
 
-        // Update UI
+        // Update UI — highlight selected trace
         document.querySelectorAll('.trace-item').forEach(item => {
             item.classList.remove('active');
         });
-        event.currentTarget.classList.add('active');
+        // Find the clicked item by matching trace ID in its content
+        const items = document.querySelectorAll('.trace-item');
+        items.forEach(item => {
+            if (item.querySelector('.trace-id')?.textContent.includes(traceId.substring(0, 8))) {
+                item.classList.add('active');
+            }
+        });
 
         this.renderTraceVisualization(trace);
     }
 
     renderTraceVisualization(trace) {
         const container = document.getElementById('traceVisualization');
+        const stepIcons = { retrieve: '🔍', encode: '🧠', ingest: '📥', generate: '⚡', rerank: '🔄' };
+
+        const stepsHtml = (trace.steps || []).map(step => {
+            const icon = Object.entries(stepIcons).find(([k]) => step.name.toLowerCase().includes(k));
+            return `
+                <div class="trace-step">
+                    <div class="step-icon">${icon ? icon[1] : '⚙️'}</div>
+                    <div class="step-content">
+                        <div class="step-name">${step.name}</div>
+                        <div class="step-time">+${(step.duration_ms || 0).toFixed(1)}ms</div>
+                    </div>
+                </div>`;
+        }).join('');
+
         container.innerHTML = `
             <div class="trace-header">
                 <h4>Trace: ${trace.trace_id}</h4>
@@ -458,38 +511,7 @@ class GlassBoxDashboard {
                 </div>
             </div>
             <div class="trace-steps">
-                <div class="trace-step">
-                    <div class="step-icon">📥</div>
-                    <div class="step-content">
-                        <div class="step-name">Input Processing</div>
-                        <div class="step-details">Query: "${trace.query}"</div>
-                        <div class="step-time">+12ms</div>
-                    </div>
-                </div>
-                <div class="trace-step">
-                    <div class="step-icon">🧠</div>
-                    <div class="step-content">
-                        <div class="step-name">Encoding</div>
-                        <div class="step-details">Generated embeddings for query</div>
-                        <div class="step-time">+45ms</div>
-                    </div>
-                </div>
-                <div class="trace-step">
-                    <div class="step-icon">🔍</div>
-                    <div class="step-content">
-                        <div class="step-name">Retrieval</div>
-                        <div class="step-details">Found 5 relevant documents</div>
-                        <div class="step-time">+89ms</div>
-                    </div>
-                </div>
-                <div class="trace-step">
-                    <div class="step-icon">⚡</div>
-                    <div class="step-content">
-                        <div class="step-name">Generation</div>
-                        <div class="step-details">Generated response using context</div>
-                        <div class="step-time">+156ms</div>
-                    </div>
-                </div>
+                ${stepsHtml || '<p class="placeholder">No steps recorded</p>'}
             </div>
         `;
     }
@@ -635,41 +657,53 @@ class GlassBoxDashboard {
         }
     }
 
-    updateCostBreakdown(metrics) {
+    async updateCostBreakdown(metrics) {
         const container = document.getElementById('costBreakdown');
-        const costs = [
-            { label: 'OpenAI API', value: '$0.0234' },
-            { label: 'Vector Storage', value: '$0.0012' },
-            { label: 'Database', value: '$0.0008' },
-            { label: 'Compute', value: '$0.0056' }
-        ];
-
-        container.innerHTML = costs.map(cost => `
-            <div class="cost-item">
-                <span class="cost-label">${cost.label}</span>
-                <span class="cost-value">${cost.value}</span>
-            </div>
-        `).join('');
+        try {
+            const res = await fetch(`${this.apiBase}/metrics`);
+            const data = await res.json();
+            const totalCost = data.total_cost_usd || data.total_cost || 0;
+            const costs = [
+                { label: 'Total Pipeline Cost', value: `$${totalCost.toFixed(4)}` },
+            ];
+            // Break down by operation if histograms exist
+            if (data.histograms) {
+                Object.entries(data.histograms).forEach(([op, h]) => {
+                    if (h.cost_usd) costs.push({ label: op, value: `$${h.cost_usd.toFixed(4)}` });
+                });
+            }
+            container.innerHTML = costs.map(c => `
+                <div class="cost-item">
+                    <span class="cost-label">${c.label}</span>
+                    <span class="cost-value">${c.value}</span>
+                </div>
+            `).join('');
+        } catch (e) {
+            container.innerHTML = '<div class="cost-item"><span class="cost-label">Unable to load costs</span></div>';
+        }
     }
 
-    updatePerformanceTable(metrics) {
+    async updatePerformanceTable(metrics) {
         const tbody = document.getElementById('performanceTableBody');
-        const operations = [
-            { name: 'encode', p50: 23, p95: 45, p99: 89, count: 1250 },
-            { name: 'retrieve', p50: 67, p95: 123, p99: 234, count: 1250 },
-            { name: 'rerank', p50: 12, p95: 34, p99: 67, count: 980 },
-            { name: 'generate', p50: 156, p95: 289, p99: 445, count: 1250 }
-        ];
-
-        tbody.innerHTML = operations.map(op => `
-            <tr>
-                <td>${op.name}</td>
-                <td>${op.p50}ms</td>
-                <td>${op.p95}ms</td>
-                <td>${op.p99}ms</td>
-                <td>${op.count}</td>
-            </tr>
-        `).join('');
+        try {
+            const res = await fetch(`${this.apiBase}/metrics`);
+            const data = await res.json();
+            if (data.histograms && Object.keys(data.histograms).length > 0) {
+                tbody.innerHTML = Object.entries(data.histograms).map(([op, h]) => `
+                    <tr>
+                        <td>${op}</td>
+                        <td>${(h.p50_ms || h.mean_ms || 0).toFixed(0)}ms</td>
+                        <td>${(h.p95_ms || 0).toFixed(0)}ms</td>
+                        <td>${(h.p99_ms || 0).toFixed(0)}ms</td>
+                        <td>${h.count || 0}</td>
+                    </tr>
+                `).join('');
+            } else {
+                tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted)">No performance data yet</td></tr>';
+            }
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted)">Unable to load data</td></tr>';
+        }
     }
 
     startAutoRefresh() {
@@ -769,7 +803,6 @@ function closePluginModal() {
 let dashboard;
 document.addEventListener('DOMContentLoaded', () => {
     dashboard = new GlassBoxDashboard();
+    // Make dashboard globally available for onclick handlers
+    window.dashboard = dashboard;
 });
-
-// Make dashboard globally available for onclick handlers
-window.dashboard = dashboard;

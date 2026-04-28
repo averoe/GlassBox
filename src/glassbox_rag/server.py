@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from glassbox_rag.config import GlassBoxConfig, load_config
@@ -104,52 +106,39 @@ def create_app(config: GlassBoxConfig | None = None) -> FastAPI:
 
     setup_logging(level=config.logging.level, log_format=config.logging.format)
 
-    app = FastAPI(
-        title="GlassBox RAG",
-        description="A transparent, modular RAG framework with integrated telemetry",
-        version=__version__,
-    )
-
-    engine: GlassBoxEngine | None = None
-    redis_rate_limiter = None
+    # ── Shared state (populated by lifespan) ──────────────────
+    _state: dict = {
+        "engine": None,
+        "redis_rate_limiter": None,
+        "jwt_auth": None,
+    }
     memory_rate_limiter_data: dict[str, list] = defaultdict(list)
-    jwt_auth = None
 
-    # ── CORS ──────────────────────────────────────────────────
-    if config.security.cors.get("enabled", True):
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=config.security.cors.get("origins", ["*"]),
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
-    # ── Lifecycle ─────────────────────────────────────────────
-
-    @app.on_event("startup")
-    async def startup():
-        nonlocal engine, redis_rate_limiter, jwt_auth
-
+    # ── Lifespan ──────────────────────────────────────────────
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # ── Startup ──
         logger.info("Starting GlassBox server…")
         engine = GlassBoxEngine(config)
         await engine.initialize()
+        _state["engine"] = engine
 
         # Redis rate limiter (if configured)
         if config.security.rate_limit_backend == "redis":
             from glassbox_rag.utils.auth import RedisRateLimiter
-            redis_rate_limiter = RedisRateLimiter(
+            redis_rl = RedisRateLimiter(
                 redis_url=config.security.redis_url,
                 max_requests=config.security.rate_limit_rpm,
             )
-            if not await redis_rate_limiter.initialize():
+            if await redis_rl.initialize():
+                _state["redis_rate_limiter"] = redis_rl
+            else:
                 logger.warning("Redis rate limiter unavailable, falling back to memory")
-                redis_rate_limiter = None
 
         # JWT auth (if configured)
         if config.auth.enabled and config.auth.jwt_secret:
             from glassbox_rag.utils.auth import JWTAuth
-            jwt_auth = JWTAuth(
+            _state["jwt_auth"] = JWTAuth(
                 secret=config.auth.jwt_secret.get_secret_value(),
                 issuer=config.auth.jwt_issuer,
                 audience=config.auth.jwt_audience,
@@ -169,30 +158,58 @@ def create_app(config: GlassBoxConfig | None = None) -> FastAPI:
 
         logger.info("GlassBox server ready on %s:%d", config.server.host, config.server.port)
 
-    @app.on_event("shutdown")
-    async def shutdown():
-        nonlocal engine, redis_rate_limiter
-        if engine:
-            await engine.shutdown()
-        if redis_rate_limiter:
-            await redis_rate_limiter.shutdown()
+        yield  # ── App runs here ──
+
+        # ── Shutdown ──
+        if _state["engine"]:
+            await _state["engine"].shutdown()
+        if _state["redis_rate_limiter"]:
+            await _state["redis_rate_limiter"].shutdown()
         logger.info("GlassBox server stopped")
 
+    app = FastAPI(
+        title="GlassBox RAG",
+        description="A transparent, modular RAG framework with integrated telemetry",
+        version=__version__,
+        lifespan=lifespan,
+    )
+
+    # ── CORS ──────────────────────────────────────────────────
+    if config.security.cors.get("enabled", True):
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.security.cors.get("origins", ["*"]),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # ── Mount static files & dashboard UI ─────────────────────
+    _ui_dir = Path(__file__).resolve().parent / "ui"
+    _static_dir = _ui_dir / "static"
+    _templates_dir = _ui_dir / "templates"
+    if _static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+        logger.info("Mounted static files from %s", _static_dir)
+
     def get_engine() -> GlassBoxEngine:
-        if engine is None:
+        eng = _state["engine"]
+        if eng is None:
             raise HTTPException(status_code=503, detail="Engine not ready")
-        return engine
+        return eng
 
     # ── Middleware ─────────────────────────────────────────────
 
     @app.middleware("http")
     async def auth_and_rate_limit(request: Request, call_next):
-        # Skip for health, docs, metrics
-        skip_paths = {"/health", "/docs", "/openapi.json", "/redoc", "/metrics/prometheus"}
-        if request.url.path in skip_paths:
+        # Skip for health, docs, metrics, dashboard, and static assets
+        skip_paths = {"/health", "/docs", "/openapi.json", "/redoc", "/metrics/prometheus", "/", "/dashboard"}
+        if request.url.path in skip_paths or request.url.path.startswith("/static"):
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"
+        redis_rate_limiter = _state["redis_rate_limiter"]
+        jwt_auth = _state["jwt_auth"]
 
         # Rate limiting
         if redis_rate_limiter:
@@ -243,6 +260,24 @@ def create_app(config: GlassBoxConfig | None = None) -> FastAPI:
                 })
 
         return await call_next(request)
+
+    # ── Dashboard Routes ──────────────────────────────────────
+
+    @app.get("/", response_class=HTMLResponse)
+    async def serve_dashboard():
+        """Serve the main dashboard UI."""
+        dashboard_path = _templates_dir / "dashboard.html"
+        if dashboard_path.is_file():
+            return HTMLResponse(content=dashboard_path.read_text(encoding="utf-8"))
+        return HTMLResponse(content="<h1>GlassBox RAG</h1><p>Dashboard not found. Place dashboard.html in ui/templates/.</p>")
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def serve_dashboard_alias():
+        """Alias for / — serves the dashboard UI."""
+        dashboard_path = _templates_dir / "dashboard.html"
+        if dashboard_path.is_file():
+            return HTMLResponse(content=dashboard_path.read_text(encoding="utf-8"))
+        return HTMLResponse(content="<h1>GlassBox RAG</h1><p>Dashboard not found.</p>")
 
     # ── Core Routes ───────────────────────────────────────────
 
@@ -389,10 +424,22 @@ def create_app(config: GlassBoxConfig | None = None) -> FastAPI:
     @app.get("/traces")
     async def list_traces(limit: int = Query(100, ge=1, le=1000)):
         eng = get_engine()
-        return {"traces": eng.list_traces(limit), "count": len(eng.list_traces(limit))}
+        raw_traces = eng.list_traces(limit)
+        # Normalize format for UI compatibility: add "id" alias and flatten steps
+        ui_traces = []
+        for t in raw_traces:
+            flat_steps = []
+            if t.get("root_step"):
+                _flatten_steps(t["root_step"], flat_steps)
+            ui_traces.append({
+                **t,
+                "id": t.get("trace_id", t.get("id", "")),
+                "steps": flat_steps,
+            })
+        return {"traces": ui_traces, "count": len(ui_traces)}
 
     @app.get("/traces/{trace_id}/visualize")
-    async def visualize_trace(trace_id: str, format: str = Query("json", regex="^(json|html)$")):
+    async def visualize_trace(trace_id: str, format: str = Query("json", pattern="^(json|html)$")):
         """Integrated visual debugger with telemetry data."""
         eng = get_engine()
         trace_obj = eng.trace_tracker.get_trace(trace_id)
@@ -446,6 +493,9 @@ def create_app(config: GlassBoxConfig | None = None) -> FastAPI:
         eng = get_engine()
         summary = eng.get_metrics_summary()
         summary["telemetry"] = eng.get_telemetry_status()
+        # Ensure the UI-expected fields are present
+        summary.setdefault("total_requests", summary.get("request_count", 0))
+        summary.setdefault("total_cost_usd", summary.get("total_cost", 0.0))
         return summary
 
     @app.get("/metrics/chunks")
@@ -465,6 +515,7 @@ def create_app(config: GlassBoxConfig | None = None) -> FastAPI:
     @app.post("/auth/token")
     async def create_token(request: TokenRequest):
         """Generate a JWT token (requires auth to be configured)."""
+        jwt_auth = _state["jwt_auth"]
         if not jwt_auth:
             raise HTTPException(status_code=501, detail="JWT auth not configured")
         token = jwt_auth.create_token(
@@ -473,6 +524,17 @@ def create_app(config: GlassBoxConfig | None = None) -> FastAPI:
         return {"token": token, "expires_in": request.expires_in}
 
     return app
+
+
+def _flatten_steps(step: dict, out: list) -> None:
+    """Recursively flatten a nested trace step tree into a flat list."""
+    out.append({
+        "name": step.get("name", ""),
+        "duration_ms": step.get("duration_ms", 0),
+        "error": step.get("error"),
+    })
+    for child in step.get("children", []):
+        _flatten_steps(child, out)
 
 
 # ═══════════════════════════════════════════════════════════════════
