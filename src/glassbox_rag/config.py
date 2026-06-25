@@ -113,6 +113,8 @@ class VectorStoreConfig(BaseModel):
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
+        if not v:
+            return v  # empty string = no vector store
         allowed = {"qdrant", "chroma", "pgvector", "supabase", "faiss", "pinecone"}
         if v not in allowed:
             raise ValueError(f"Vector store type must be one of {allowed}")
@@ -134,6 +136,8 @@ class DatabaseConfig(BaseModel):
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
+        if not v:
+            return v  # empty string = no database
         allowed = {"postgresql", "mysql", "sqlite", "mongodb", "supabase"}
         if v not in allowed:
             raise ValueError(f"Database type must be one of {allowed}")
@@ -188,7 +192,7 @@ class MultimodalConfig(BaseModel):
     pdf: dict[str, Any] = Field(default_factory=dict)
 
 
-class WritebackConfig(BaseModel):
+class WriteBackConfig(BaseModel):
     """Write-back configuration."""
 
     enabled: bool = True
@@ -262,7 +266,7 @@ class GenerationSection(BaseModel):
     @field_validator("backend")
     @classmethod
     def validate_backend(cls, v: str) -> str:
-        allowed = {"", "openai", "ollama"}
+        allowed = {"", "openai", "ollama", "anthropic"}
         if v not in allowed:
             raise ValueError(f"Generation backend must be one of {allowed}")
         return v
@@ -284,6 +288,100 @@ class DevConfig(BaseModel):
     trace_all_requests: bool = True
 
 
+# ── New config sections (Build Directive v3) ─────────────────────
+
+
+class QueryRewriteConfig(BaseModel):
+    """Query rewriting pre-retrieval hook configuration."""
+
+    enabled: bool = False
+    model: str = ""  # defaults to generation backend if empty
+    prompt_template: str = (
+        "Rewrite the following user query into a clearer, more retrieval-friendly form. "
+        "Return only the rewritten query, nothing else.\n\nQuery: {query}"
+    )
+
+
+class MultiQueryConfig(BaseModel):
+    """Multi-query expansion configuration."""
+
+    enabled: bool = False
+    num_queries: int = Field(default=3, ge=2, le=10)
+    fusion_method: str = "rrf"  # rrf (reciprocal rank fusion)
+
+
+class ParentChildConfig(BaseModel):
+    """Parent-child retrieval configuration."""
+
+    enabled: bool = False
+
+
+class ContextCompressionConfig(BaseModel):
+    """Context compression post-retrieval configuration."""
+
+    enabled: bool = False
+    model: str = ""  # defaults to generation backend if empty
+    prompt_template: str = (
+        "Given the following context passages and query, remove sentences that are "
+        "irrelevant to answering the query. Preserve key information.\n\n"
+        "Query: {query}\n\nContext:\n{context}\n\nCompressed context:"
+    )
+
+
+class EvaluationConfig(BaseModel):
+    """Evaluation system configuration."""
+
+    enabled: bool = False
+    backend: str = ""  # same format as generation.backend (openai, ollama, anthropic)
+    model: str = ""  # defaults to generation model if empty
+    api_key: SecretStr | None = None
+    base_url: str | None = None
+    concurrency_limit: int = Field(default=5, ge=1, le=50)
+    regression_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
+    metrics: List[str] = Field(
+        default_factory=lambda: ["faithfulness", "groundedness"]
+    )
+
+    @field_validator("backend")
+    @classmethod
+    def validate_backend(cls, v: str) -> str:
+        allowed = {"", "openai", "ollama", "anthropic"}
+        if v not in allowed:
+            raise ValueError(f"Evaluation backend must be one of {allowed}")
+        return v
+
+
+class VersioningConfig(BaseModel):
+    """Pipeline and prompt versioning configuration."""
+
+    auto_increment: bool = True
+    prompts_dir: str = ".glassbox/prompts"
+    snapshots_dir: str = ".glassbox/snapshots"
+    versions_dir: str = ".glassbox/versions"
+
+
+class GitIntegrationConfig(BaseModel):
+    """Git integration configuration."""
+
+    auto_commit: bool = False
+    branch_association: bool = False
+
+
+class MultiPipelineConfig(BaseModel):
+    """Multi-pipeline workspace configuration."""
+
+    active_pipeline: str = "default"
+
+
+class IndexingExtrasConfig(BaseModel):
+    """Extended indexing features configuration."""
+
+    drift_detection_enabled: bool = False
+    drift_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
+    freshness_validation: bool = True
+    lineage_tracking: bool = True
+
+
 class GlassBoxConfig(BaseModel):
     """Main GlassBox RAG configuration."""
 
@@ -296,7 +394,7 @@ class GlassBoxConfig(BaseModel):
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     multimodal: MultimodalConfig = Field(default_factory=MultimodalConfig)
-    writeback: WritebackConfig = Field(default_factory=WritebackConfig)
+    writeback: WriteBackConfig = Field(default_factory=WriteBackConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
@@ -304,6 +402,21 @@ class GlassBoxConfig(BaseModel):
     generation: GenerationSection = Field(default_factory=GenerationSection)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     dev: DevConfig = Field(default_factory=DevConfig)
+
+    # ── Build Directive v3 sections ──
+    query_rewrite: QueryRewriteConfig = Field(default_factory=QueryRewriteConfig)
+    multi_query: MultiQueryConfig = Field(default_factory=MultiQueryConfig)
+    parent_child: ParentChildConfig = Field(default_factory=ParentChildConfig)
+    context_compression: ContextCompressionConfig = Field(
+        default_factory=ContextCompressionConfig
+    )
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    versioning: VersioningConfig = Field(default_factory=VersioningConfig)
+    git: GitIntegrationConfig = Field(default_factory=GitIntegrationConfig)
+    multi_pipeline: MultiPipelineConfig = Field(default_factory=MultiPipelineConfig)
+    indexing_extras: IndexingExtrasConfig = Field(
+        default_factory=IndexingExtrasConfig
+    )
 
     model_config = ConfigDict(extra="allow")
 

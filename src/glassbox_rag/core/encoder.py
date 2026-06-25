@@ -675,7 +675,7 @@ class EmbeddingCache:
         self._max_size = max_size
         self._max_memory_bytes = max_memory_bytes
         self._ttl_seconds = ttl_seconds
-        self._cache: Ordereddict[str, tuple[np.ndarray, float]] = OrderedDict()
+        self._cache: OrderedDict[str, tuple[np.ndarray, float]] = OrderedDict()
         self._lock = Lock()
         self._hits = 0
         self._misses = 0
@@ -855,10 +855,10 @@ class ModularEncodingLayer:
         self._initialized = True
 
         if not self.encoders:
-            from glassbox_rag.config import GlassBoxConfig  # avoid circular
-            raise EncoderError(
+            logger.warning(
                 "No encoders initialized. Configure at least one encoder "
-                "under 'encoding.local' or 'encoding.cloud' in your config file."
+                "under 'encoding.local' or 'encoding.cloud' to enable "
+                "embedding operations."
             )
         else:
             logger.info(

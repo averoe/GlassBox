@@ -60,6 +60,8 @@ class DocumentDeduplicator:
         self.threshold = threshold
         self.hash_bits = hash_bits
         self._seen_hashes: Set[str] = set()
+        self._seen_simhashes: list[int] = []
+        self._seen_embeddings: list[np.ndarray] = []
 
     def deduplicate(
         self,
@@ -104,21 +106,57 @@ class DocumentDeduplicator:
         unique_texts = [texts[i] for i in unique_indices]
         return unique_texts, unique_indices, dupes
 
-    def is_duplicate(self, content: str) -> bool:
+    def is_duplicate(self, content: str, embedding: Optional[np.ndarray] = None) -> bool:
         """
-        Stateful check: has this exact content been seen before?
+        Stateful check: has this content been seen before?
 
-        Uses a rolling hash set. Good for streaming ingest.
+        Respects the configured strategy:
+          - exact: SHA-256 content hash comparison.
+          - fuzzy: SimHash fingerprint with threshold similarity.
+          - semantic: Cosine similarity on embeddings (requires embedding arg).
+
+        Good for streaming ingest.
         """
-        h = self._content_hash(content)
-        if h in self._seen_hashes:
-            return True
-        self._seen_hashes.add(h)
+        if self.strategy == "exact":
+            h = self._content_hash(content)
+            if h in self._seen_hashes:
+                return True
+            self._seen_hashes.add(h)
+            return False
+
+        elif self.strategy == "fuzzy":
+            h = self._simhash(content)
+            for seen_h in self._seen_simhashes:
+                if self._simhash_similarity(h, seen_h) >= self.threshold:
+                    return True
+            self._seen_simhashes.append(h)
+            return False
+
+        elif self.strategy == "semantic":
+            if embedding is None:
+                raise ValueError(
+                    "is_duplicate() with strategy='semantic' requires an embedding. "
+                    "Pass embedding=encoder.encode(content)."
+                )
+            norm = np.linalg.norm(embedding)
+            if norm > 1e-10:
+                normalized = embedding / norm
+            else:
+                normalized = embedding
+            for seen_emb in self._seen_embeddings:
+                sim = float(np.dot(normalized, seen_emb))
+                if sim >= self.threshold:
+                    return True
+            self._seen_embeddings.append(normalized)
+            return False
+
         return False
 
     def reset(self) -> None:
-        """Clear the seen-hashes set."""
+        """Clear all seen-state for streaming dedup."""
         self._seen_hashes.clear()
+        self._seen_simhashes.clear()
+        self._seen_embeddings.clear()
 
     # ── Exact dedup ──────────────────────────────────────────
 
@@ -164,14 +202,15 @@ class DocumentDeduplicator:
         unique: list[dict[str, Any]] = []
         duplicates: list[DuplicateInfo] = []
         unique_hashes: list[int] = []
+        unique_doc_indices: list[int] = []  # maps unique slot → original doc index
 
         for i, h in enumerate(hashes):
             is_dupe = False
-            for j, existing_hash in enumerate(unique_hashes):
+            for slot, existing_hash in enumerate(unique_hashes):
                 sim = self._simhash_similarity(h, existing_hash)
                 if sim >= self.threshold:
                     duplicates.append(DuplicateInfo(
-                        original_index=j,  # mapped to unique's index but realistically we just want the index
+                        original_index=unique_doc_indices[slot],  # FIXED: maps to documents[]
                         duplicate_index=i,
                         similarity=sim,
                         strategy="fuzzy",
@@ -181,6 +220,7 @@ class DocumentDeduplicator:
 
             if not is_dupe:
                 unique_hashes.append(h)
+                unique_doc_indices.append(i)  # record original doc index
                 unique.append(documents[i])
 
         if duplicates:
@@ -297,9 +337,9 @@ class DocumentDeduplicator:
         num_bands = 8
         band_size = num_planes // num_bands
 
-        # 1. Random Projections
-        np.random.seed(42)  # reproducible projections
-        planes = np.random.randn(embeddings.shape[1], num_planes)
+        # 1. Random Projections — thread-safe isolated Generator
+        rng = np.random.default_rng(42)
+        planes = rng.standard_normal((embeddings.shape[1], num_planes))
         binary_hash = (embeddings @ planes > 0).astype(np.uint8)
 
         # 2. Bucket by bands

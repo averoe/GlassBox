@@ -197,7 +197,7 @@ class MetricsTracker:
         self.costs = config.metrics.costs or {}
 
         # Global request history (bounded, ordered by insertion for O(1) eviction)
-        self._request_history: Ordereddict[str, RequestMetrics] = OrderedDict()
+        self._request_history: OrderedDict[str, RequestMetrics] = OrderedDict()
         self._max_history = 5000
 
         # Per-operation-type latency histograms

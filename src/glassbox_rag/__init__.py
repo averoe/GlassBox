@@ -8,6 +8,10 @@ Public API:
     from glassbox_rag import DocumentDeduplicator
     from glassbox_rag import TokenCounter
     from glassbox_rag import LLMGenerator, StreamEvent
+    from glassbox_rag import EvaluationRunner, EvaluationReport, GoldenDataset
+    from glassbox_rag import ExperimentTracker
+    from glassbox_rag import VersionManager
+    from glassbox_rag import LineageEnricher, DriftDetector, FreshnessValidator
 """
 
 __version__ = "1.0.0"
@@ -28,6 +32,19 @@ from glassbox_rag.core.hooks import HookManager, HookPoint
 from glassbox_rag.core.dedup import DocumentDeduplicator
 from glassbox_rag.core.tokens import TokenCounter
 from glassbox_rag.core.generator import StreamEvent, GenerationResult
+from glassbox_rag.core.indexing_extras import (
+    LineageEnricher,
+    DriftDetector,
+    FreshnessValidator,
+)
+from glassbox_rag.evaluation import (
+    EvaluationRunner,
+    EvaluationReport,
+    RegressionReport,
+    GoldenDataset,
+)
+from glassbox_rag.experiments import ExperimentTracker
+from glassbox_rag.versioning import VersionManager
 
 __all__ = [
     # Core
@@ -61,6 +78,19 @@ __all__ = [
     # Generation
     "StreamEvent",
     "GenerationResult",
+    # Indexing extras
+    "LineageEnricher",
+    "DriftDetector",
+    "FreshnessValidator",
+    # Evaluation
+    "EvaluationRunner",
+    "EvaluationReport",
+    "RegressionReport",
+    "GoldenDataset",
+    # Experiments
+    "ExperimentTracker",
+    # Versioning
+    "VersionManager",
     # Version
     "__version__",
 ]

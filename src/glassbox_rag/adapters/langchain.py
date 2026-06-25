@@ -97,14 +97,14 @@ class GlassBoxRetriever:
         return await self._aget_relevant_documents(query)
 
     def invoke(self, input: str, **kwargs: Any) -> list[Any]:
-        """Sync invoke — runs async retrieval in a new event loop."""
-        import asyncio
-        return asyncio.run(self._aget_relevant_documents(input))
+        """Sync invoke — safely bridges to async retrieval."""
+        from glassbox_rag.adapters._utils import run_sync
+        return run_sync(self._aget_relevant_documents(input))
 
     def get_relevant_documents(self, query: str) -> list[Any]:
-        """Sync wrapper — runs async retrieval in a new event loop."""
-        import asyncio
-        return asyncio.run(self._aget_relevant_documents(query))
+        """Sync wrapper — safely bridges to async retrieval."""
+        from glassbox_rag.adapters._utils import run_sync
+        return run_sync(self._aget_relevant_documents(query))
 
 
 class GlassBoxEmbeddings:
@@ -139,13 +139,13 @@ class GlassBoxEmbeddings:
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Sync wrapper."""
-        import asyncio
-        return asyncio.run(self.aembed_documents(texts))
+        from glassbox_rag.adapters._utils import run_sync
+        return run_sync(self.aembed_documents(texts))
 
     def embed_query(self, text: str) -> list[float]:
         """Sync wrapper."""
-        import asyncio
-        return asyncio.run(self.aembed_query(text))
+        from glassbox_rag.adapters._utils import run_sync
+        return run_sync(self.aembed_query(text))
 
 
 # ── Runtime ABC registration ────────────────────────────────────

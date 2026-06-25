@@ -4,6 +4,17 @@ import pytest
 from glassbox_rag import GlassBoxEngine, GlassBoxConfig
 
 
+# Helper: config with no vector store or database (skips backend validation)
+def _minimal_config(**overrides) -> GlassBoxConfig:
+    """Create a config that doesn't require any external backends."""
+    defaults = {
+        "vector_store": {"type": ""},
+        "database": {"type": ""},
+    }
+    defaults.update(overrides)
+    return GlassBoxConfig(**defaults)
+
+
 class TestGlassBoxEngine:
     """Integration tests for the main engine."""
 
@@ -23,7 +34,7 @@ class TestGlassBoxEngine:
 
     def test_engine_construction(self):
         """Engine can be constructed without async init."""
-        config = GlassBoxConfig()
+        config = _minimal_config()
         engine = GlassBoxEngine(config)
         assert engine.encoding_layer is not None
         assert engine.metrics_tracker is not None
@@ -34,7 +45,7 @@ class TestGlassBoxEngine:
     @pytest.mark.asyncio
     async def test_engine_lifecycle(self):
         """Engine initializes and shuts down cleanly."""
-        config = GlassBoxConfig()
+        config = _minimal_config()
         engine = GlassBoxEngine(config)
         await engine.initialize()
         assert engine._initialized is True
@@ -46,7 +57,7 @@ class TestGlassBoxEngine:
         """Calling retrieve before initialize raises EngineError."""
         from glassbox_rag.core.engine import EngineError
 
-        config = GlassBoxConfig()
+        config = _minimal_config()
         engine = GlassBoxEngine(config)
 
         with pytest.raises(EngineError, match="not initialized"):
@@ -57,7 +68,7 @@ class TestGlassBoxEngine:
         """Ingest rejects empty documents or missing content."""
         from glassbox_rag.core.engine import EngineError
 
-        config = GlassBoxConfig()
+        config = _minimal_config()
         engine = GlassBoxEngine(config)
         await engine.initialize()
 
@@ -72,7 +83,7 @@ class TestGlassBoxEngine:
     @pytest.mark.asyncio
     async def test_update_with_protection(self):
         """Test protected write-back."""
-        config = GlassBoxConfig(writeback={"mode": "full"})
+        config = _minimal_config(writeback={"mode": "full"})
         engine = GlassBoxEngine(config)
         await engine.initialize()
 
@@ -90,7 +101,7 @@ class TestGlassBoxEngine:
     @pytest.mark.asyncio
     async def test_update_rejected_low_confidence(self):
         """Test that low confidence write-back is rejected in protected mode."""
-        config = GlassBoxConfig(
+        config = _minimal_config(
             writeback={
                 "mode": "protected",
                 "protected": {"confidence_threshold": 0.8},
@@ -112,7 +123,7 @@ class TestGlassBoxEngine:
 
     def test_trace_retrieval(self):
         """Trace retrieval returns None for nonexistent traces."""
-        config = GlassBoxConfig()
+        config = _minimal_config()
         engine = GlassBoxEngine(config)
         assert engine.get_trace("nonexistent") is None
         assert engine.list_traces() == []
@@ -120,7 +131,7 @@ class TestGlassBoxEngine:
     @pytest.mark.asyncio
     async def test_metrics_summary(self):
         """Metrics summary works after initialization."""
-        config = GlassBoxConfig()
+        config = _minimal_config()
         engine = GlassBoxEngine(config)
         await engine.initialize()
 
@@ -132,7 +143,7 @@ class TestGlassBoxEngine:
     @pytest.mark.asyncio
     async def test_chunk_report(self):
         """Chunk report works."""
-        config = GlassBoxConfig()
+        config = _minimal_config()
         engine = GlassBoxEngine(config)
         await engine.initialize()
 

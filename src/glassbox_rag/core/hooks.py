@@ -38,6 +38,10 @@ logger = get_logger(__name__)
 HookFn = Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]]
 
 
+class HookTimeoutError(Exception):
+    """Raised when a hook function exceeds its execution timeout."""
+
+
 class HookPoint(Enum):
     """Points in the pipeline where hooks can be attached."""
 
@@ -61,10 +65,11 @@ class HookManager:
     per point are executed in registration order.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, hook_timeout: float = 30.0) -> None:
         self._hooks: dict[HookPoint, list[tuple[int, HookFn]]] = {
             point: [] for point in HookPoint
         }
+        self.hook_timeout = hook_timeout
 
     def register(self, point: HookPoint, fn: HookFn, *, priority: int = 0) -> None:
         """
@@ -128,7 +133,9 @@ class HookManager:
 
         for _, hook in hooks:
             try:
-                result = await hook(context)
+                result = await asyncio.wait_for(
+                    hook(context), timeout=self.hook_timeout,
+                )
                 if result is not None:
                     context = result
                 else:
@@ -136,6 +143,15 @@ class HookManager:
                         "Hook '%s' at %s returned None — context unchanged",
                         hook.__name__, point.value,
                     )
+            except asyncio.TimeoutError:
+                msg = (
+                    f"Hook '{hook.__name__}' at {point.value} exceeded "
+                    f"{self.hook_timeout}s timeout"
+                )
+                if point == HookPoint.ON_ERROR:
+                    logger.debug(msg)
+                else:
+                    raise HookTimeoutError(msg)
             except Exception as e:
                 if point == HookPoint.ON_ERROR:
                     logger.debug("Error hook '%s' raised: %s", hook.__name__, e)

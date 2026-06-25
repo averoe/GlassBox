@@ -454,7 +454,7 @@ class LLMGenerator:
 
         # Truncate context documents to fit
         if context_documents:
-            context_documents = self.token_counter.truncate_to_budget(
+            context_documents, _ = self.token_counter.truncate_to_budget(
                 context_documents, budget,
             )
 

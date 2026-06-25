@@ -1,8 +1,8 @@
 """
-JWT authentication middleware.
+JWT authentication and rate limiting utilities.
 
-Supports JWT token validation and optional OAuth2 integration
-for production API security beyond simple API keys.
+Provides JWT token validation, creation, and optional Redis-based
+distributed rate limiting for production use.
 """
 
 from __future__ import annotations
@@ -13,9 +13,6 @@ import hashlib
 import base64
 import json
 from typing import Any, Dict, List, Optional
-
-from fastapi import Request
-from fastapi.responses import JSONResponse
 
 from glassbox_rag.utils.logging import get_logger
 
@@ -28,7 +25,7 @@ class AuthError(Exception):
 
 class JWTAuth:
     """
-    Simple JWT authentication middleware.
+    Simple JWT authentication handler.
 
     Validates HS256 signed tokens with configurable secret,
     issuer, and expiration checking.
@@ -240,56 +237,6 @@ class RedisRateLimiter:
     async def shutdown(self) -> None:
         if self._client:
             await self._client.close()
-
-
-def create_auth_middleware(
-    jwt_secret: str | None = None,
-    jwt_issuer: str | None = None,
-    api_keys: list[str] | None = None,
-    excluded_paths: list[str] | None = None,
-):
-    """
-    Create a FastAPI middleware that checks JWT or API key auth.
-
-    Skips auth for excluded_paths (e.g., /health, /docs).
-    """
-    jwt_auth = JWTAuth(secret=jwt_secret or "change-me", issuer=jwt_issuer) if jwt_secret else None
-    excluded = set(excluded_paths or ["/health", "/docs", "/openapi.json", "/redoc"])
-
-    async def auth_middleware(request: Request, call_next):
-        if request.url.path in excluded:
-            return await call_next(request)
-
-        # Try JWT first
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer ") and jwt_auth:
-            token = auth_header[7:]
-            try:
-                claims = jwt_auth.validate_token(token)
-                request.state.user = claims
-                return await call_next(request)
-            except AuthError as e:
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": f"JWT auth failed: {e}"},
-                )
-
-        # Fall back to API key
-        api_key = request.headers.get("X-API-Key", "")
-        if api_keys and api_key in api_keys:
-            request.state.user = {"sub": "api_key", "key": api_key[:8] + "..."}
-            return await call_next(request)
-
-        # No valid auth
-        if jwt_auth or api_keys:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Authentication required"},
-            )
-
-        return await call_next(request)
-
-    return auth_middleware
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -33,14 +33,12 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastapi>=0.104.0,<1.0.0",
-    "uvicorn[standard]>=0.24.0,<1.0.0",
+    "textual>=0.80.0",
     "pydantic>=2.0.0,<3.0.0",
     "pydantic-settings>=2.0.0,<3.0.0",
     "pyyaml>=6.0,<7.0",
     "numpy>=1.24.0,<2.0.0",
     "requests>=2.31.0,<3.0.0",
-    "python-multipart>=0.0.6,<1.0.0",
     "httpx>=0.25.0,<1.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
 ]
@@ -168,9 +166,6 @@ include = ["glassbox_rag*"]
 [tool.setuptools.package-data]
 glassbox_rag = [
     "py.typed",
-    "ui/static/*.js",
-    "ui/static/*.css",
-    "ui/templates/*.html",
 ]
 
 # Version is set in [project].version and synced with __init__.__version__
@@ -186,6 +181,9 @@ line_length = 100
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration_real: tests requiring real external services (Qdrant, PostgreSQL, Redis)",
+]
 
 [tool.mypy]
 python_version = "3.9"

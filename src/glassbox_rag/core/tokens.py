@@ -23,6 +23,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # OpenAI
     "gpt-4o": 128_000,
     "gpt-4o-mini": 128_000,
+    "gpt-4o-mini-2024-07-18": 128_000,
     "gpt-4-turbo": 128_000,
     "gpt-4": 8_192,
     "gpt-3.5-turbo": 16_385,
@@ -31,6 +32,9 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-3-sonnet": 200_000,
     "claude-3-haiku": 200_000,
     "claude-3.5-sonnet": 200_000,
+    "claude-3.5-haiku": 200_000,
+    "claude-opus-4": 200_000,
+    "claude-sonnet-4": 200_000,
     # Google
     "gemini-1.5-pro": 1_048_576,
     "gemini-1.5-flash": 1_048_576,
@@ -176,12 +180,15 @@ class TokenCounter:
         self,
         documents: list[str],
         budget: TokenBudget,
-    ) -> list[str]:
+    ) -> tuple[list[str], TokenBudget]:
         """
         Truncate a list of context documents to fit within the budget.
 
-        Returns the longest prefix of documents that fits, with the
-        last document potentially truncated.
+        Returns a tuple of:
+          - The longest prefix of documents that fits (last may be truncated)
+          - A new TokenBudget with context_documents filled in
+
+        The original budget object is NOT mutated.
         """
         available = budget.remaining
         result: list[str] = []
@@ -202,8 +209,15 @@ class TokenCounter:
                         used += self.count(truncated)
                 break
 
-        budget.context_documents = used
-        return result
+        # Return a new budget with context_documents filled — don't mutate original
+        new_budget = TokenBudget(
+            total=budget.total,
+            system_prompt=budget.system_prompt,
+            context_documents=used,
+            query=budget.query,
+            reserved_output=budget.reserved_output,
+        )
+        return result, new_budget
 
     # ── Private helpers ───────────────────────────────────────
 

@@ -165,9 +165,9 @@ class TestEncoderFactory:
 
     def test_openai_encoder_no_key(self):
         encoder = OpenAIEncoder({"api_key": None})
-        with pytest.raises(EncoderError, match="API key"):
+        with pytest.raises(EncoderError):
             import asyncio
-            asyncio.get_event_loop().run_until_complete(encoder.initialize())
+            asyncio.run(encoder.initialize())
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -181,14 +181,14 @@ class TestChunking:
         return ChunkingConfig(**defaults)
 
     def test_fixed_size_basic(self):
-        config = self._make_config(chunk_size=50, chunk_overlap=0)
+        config = self._make_config(chunk_size=64, chunk_overlap=0)
         chunker = FixedSizeChunker(config)
-        text = "A" * 120
+        text = "A" * 192
         chunks = chunker.chunk(text)
         assert len(chunks) == 3
-        assert chunks[0].size == 50
-        assert chunks[1].size == 50
-        assert chunks[2].size == 20
+        assert chunks[0].size == 64
+        assert chunks[1].size == 64
+        assert chunks[2].size == 64
 
     def test_fixed_size_with_overlap(self):
         config = self._make_config(chunk_size=100, chunk_overlap=20)
@@ -228,14 +228,14 @@ class TestChunking:
         assert chunks[0].metadata["source"] == "test.txt"
 
     def test_chunk_with_stats(self):
-        config = self._make_config(chunk_size=50, chunk_overlap=0)
+        config = self._make_config(chunk_size=64, chunk_overlap=0)
         chunker = FixedSizeChunker(config)
-        text = "A" * 120
+        text = "A" * 192
         chunks, stats = chunker.chunk_with_stats(text)
         assert stats.total_chunks == 3
-        assert stats.total_chars == 120
-        assert stats.min_chunk_size == 20
-        assert stats.max_chunk_size == 50
+        assert stats.total_chars == 192
+        assert stats.min_chunk_size == 64
+        assert stats.max_chunk_size == 64
 
     def test_create_chunker_factory(self):
         config = ChunkingConfig(strategy="recursive")

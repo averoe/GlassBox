@@ -75,8 +75,8 @@ class GlassBoxLlamaRetriever:
 
     def retrieve(self, query_str: str) -> list[Any]:
         """Sync wrapper."""
-        import asyncio
-        return asyncio.run(self.aretrieve(query_str))
+        from glassbox_rag.adapters._utils import run_sync
+        return run_sync(self.aretrieve(query_str))
 
 
 class GlassBoxQueryEngine:
@@ -93,12 +93,14 @@ class GlassBoxQueryEngine:
         top_k: int = 5,
         encoder: str | None = None,
         system_prompt: str | None = None,
+        llm_generator: Any | None = None,
     ) -> None:
         _check_llamaindex()
         self.engine = engine
         self.top_k = top_k
         self.encoder = encoder
         self.system_prompt = system_prompt
+        self._generator = llm_generator  # user-supplied or None (uses engine.generate)
 
     async def aquery(self, query_str: str) -> Any:
         """Async query — returns a LlamaIndex Response object."""
@@ -135,8 +137,8 @@ class GlassBoxQueryEngine:
 
     def query(self, query_str: str) -> Any:
         """Sync wrapper."""
-        import asyncio
-        return asyncio.run(self.aquery(query_str))
+        from glassbox_rag.adapters._utils import run_sync
+        return run_sync(self.aquery(query_str))
 
 
 # ── Runtime ABC registration ────────────────────────────────────

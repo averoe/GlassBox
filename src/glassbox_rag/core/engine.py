@@ -12,6 +12,8 @@ import asyncio
 import importlib
 import inspect
 import math
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
@@ -44,6 +46,11 @@ from glassbox_rag.core.writeback import (
     WriteBackResult,
     WriteBackError,
 )
+from glassbox_rag.core.indexing_extras import (
+    DriftDetector,
+    FreshnessValidator,
+    LineageEnricher,
+)
 from glassbox_rag.plugins.base import DatabasePlugin, VectorStorePlugin
 from glassbox_rag.trace.tracker import TraceTracker
 from glassbox_rag.utils.logging import get_logger
@@ -55,6 +62,65 @@ logger = get_logger(__name__)
 
 class EngineError(Exception):
     """Raised when an engine operation fails."""
+
+
+@dataclass
+class InlineEvaluation:
+    """Inline evaluation scores attached to a GenerateResponse."""
+
+    faithfulness: float = 0.0
+    groundedness: float = 0.0
+    context_relevance: float = 0.0
+
+
+@dataclass
+class GenerateResponse:
+    """
+    Response from GlassBoxEngine.generate().
+
+    Backward-compatible with dict access: response["answer"] still works.
+    The .evaluation attribute is only populated when evaluate=True;
+    otherwise it is None.
+    """
+
+    answer: str
+    sources: list[dict[str, Any]]
+    retrieval: dict[str, Any]
+    generation: dict[str, Any]
+    trace_id: str = ""
+    pipeline_version: int = 0
+    evaluation: InlineEvaluation | None = None
+
+    # ── Dict-like interface for backward compatibility ────────
+
+    def __getitem__(self, key: str) -> Any:
+        return self._to_dict()[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._to_dict()
+
+    def keys(self):
+        return self._to_dict().keys()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._to_dict().get(key, default)
+
+    def _to_dict(self) -> dict[str, Any]:
+        d = {
+            "answer": self.answer,
+            "sources": self.sources,
+            "retrieval": self.retrieval,
+            "generation": self.generation,
+            "trace_id": self.trace_id,
+            "pipeline_version": self.pipeline_version,
+        }
+        if self.evaluation is not None:
+            d["evaluation"] = {
+                "faithfulness": self.evaluation.faithfulness,
+                "groundedness": self.evaluation.groundedness,
+                "context_relevance": self.evaluation.context_relevance,
+            }
+        return d
 
 
 class GlassBoxEngine:
@@ -91,6 +157,15 @@ class GlassBoxEngine:
         # New: Token counter
         self.token_counter = TokenCounter()
 
+        # Indexing extras (separated concerns)
+        ie = config.indexing_extras
+        self._lineage_enricher = LineageEnricher(enabled=ie.lineage_tracking)
+        self._drift_detector = DriftDetector(
+            threshold=ie.drift_threshold,
+            enabled=ie.drift_detection_enabled,
+        )
+        self._freshness_validator = FreshnessValidator()
+
         # Telemetry hub
         self.telemetry = TelemetryHub(
             otel_enabled=config.telemetry.otel_enabled,
@@ -111,6 +186,7 @@ class GlassBoxEngine:
 
         # LLM generator (optional — initialized on first use or via config)
         self._generator = None
+        self._generator_lock = asyncio.Lock()
 
         self._initialized = False
 
@@ -167,6 +243,37 @@ class GlassBoxEngine:
             self.config, database=self.database,
         )
 
+        # 7. Register retrieval strategy hooks (Build Directive v3)
+        await self._register_strategy_hooks()
+
+        # 8. Register DriftDetector as POST_INGEST hook
+        if self.config.indexing_extras.drift_detection_enabled:
+            self.hooks.register(
+                HookPoint.POST_INGEST, self._drift_detector, priority=10,
+            )
+            logger.info("✓ Drift detector registered as POST_INGEST hook")
+
+        # 9. Freshness validation — warn if encoder config changed since last run
+        if self.config.indexing_extras.freshness_validation:
+            enc_cfg = self.config.encoding
+            default_enc = enc_cfg.default_encoder
+            # Resolve model/dim from cloud or local config
+            enc_model = ""
+            enc_dim = 0
+            cloud_cfg = getattr(enc_cfg.cloud, default_enc, None)
+            if cloud_cfg and hasattr(cloud_cfg, "model"):
+                enc_model = cloud_cfg.model
+                enc_dim = getattr(cloud_cfg, "embedding_dim", 0)
+            freshness_report = self._freshness_validator.check(
+                encoder_name=default_enc,
+                encoder_model=enc_model,
+                embedding_dim=enc_dim,
+            )
+            if not freshness_report["fresh"]:
+                logger.warning(
+                    "Freshness check: %s", freshness_report["recommendation"],
+                )
+
         self._initialized = True
         logger.info(
             "GlassBox engine ready  "
@@ -205,21 +312,20 @@ class GlassBoxEngine:
         vs_type = self.config.vector_store.type
         vs_config = getattr(self.config.vector_store, vs_type, None)
         if vs_type and not vs_config:
-            logger.warning(
-                "Vector store type is '%s' but no '%s' configuration block found. "
-                "The vector store plugin will not load. Add a '%s:' block under "
-                "'vector_store:' in your config file, or change 'vector_store.type'.",
-                vs_type, vs_type, vs_type,
+            raise EngineError(
+                f"Vector store type is '{vs_type}' but no '{vs_type}' configuration "
+                f"block was found. Add a '{vs_type}:' block under 'vector_store:' in "
+                f"your config, or remove 'vector_store.type' to skip vector storage."
             )
 
         # Check database config
         db_type = self.config.database.type
         db_config = getattr(self.config.database, db_type, None)
         if db_type and not db_config:
-            logger.warning(
-                "Database type is '%s' but no '%s' configuration block found. "
-                "The database plugin will not load.",
-                db_type, db_type,
+            raise EngineError(
+                f"Database type is '{db_type}' but no '{db_type}' configuration "
+                f"block was found. Add a '{db_type}:' block under 'database:' in "
+                f"your config, or remove 'database.type' to skip database."
             )
 
     # ── Plugin Loading ────────────────────────────────────────────
@@ -280,6 +386,30 @@ class GlassBoxEngine:
         except Exception as e:
             logger.error("✗ Failed to load %s plugin '%s': %s", plugin_type, name, e)
             return None
+
+    async def _register_strategy_hooks(self) -> None:
+        """Register Build Directive v3 retrieval strategy hooks."""
+        # These hooks use the generator lazily — they store a reference
+        # but only call it when enabled and the generator is ready.
+        generator = self._generator  # may be None until first generate()
+
+        if self.config.query_rewrite.enabled:
+            from glassbox_rag.core.strategies.query_rewrite import QueryRewriteHook
+            hook = QueryRewriteHook(self.config.query_rewrite, generator)
+            self.hooks.register(HookPoint.PRE_RETRIEVE, hook, priority=-10)
+            logger.info("✓ Query rewrite hook registered")
+
+        if self.config.parent_child.enabled:
+            from glassbox_rag.core.strategies.parent_child import ParentChildResolver
+            hook = ParentChildResolver(self.config.parent_child, self.database)
+            self.hooks.register(HookPoint.POST_RETRIEVE, hook, priority=10)
+            logger.info("✓ Parent-child resolver hook registered")
+
+        if self.config.context_compression.enabled:
+            from glassbox_rag.core.strategies.context_compression import ContextCompressor
+            hook = ContextCompressor(self.config.context_compression, generator)
+            self.hooks.register(HookPoint.PRE_GENERATE, hook, priority=10)
+            logger.info("✓ Context compression hook registered")
 
     async def _init_reranker(self) -> None:
         """Initialize the configured reranker."""
@@ -428,15 +558,23 @@ class GlassBoxEngine:
         system_prompt: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> dict[str, Any]:
+        evaluate: bool = False,
+    ) -> GenerateResponse:
         """
         Retrieve + Generate: end-to-end RAG pipeline.
 
         Retrieves relevant documents, then generates a response
         using the configured LLM backend.
 
+        Args:
+            evaluate: If True, run inline faithfulness and groundedness
+                      scoring before returning. Scores are included in
+                      response.evaluation.
+
         Returns:
-            Dict with 'answer', 'sources', 'retrieval', and 'generation' details.
+            GenerateResponse with 'answer', 'sources', 'retrieval',
+            'generation' details, and optional 'evaluation' scores.
+            Supports dict-like access for backward compatibility.
         """
         self._ensure_initialized()
         await self._ensure_generator()
@@ -471,13 +609,27 @@ class GlassBoxEngine:
             "retrieval_result": retrieval_result,
         })
 
-        return {
-            "answer": ctx.get("answer", gen_result.text),
-            "sources": [d.to_dict() for d in retrieval_result.documents],
-            "retrieval": retrieval_result.to_dict(),
-            "generation": gen_result.to_dict(),
-            "trace_id": retrieval_result.trace_id,
-        }
+        answer = ctx.get("answer", gen_result.text)
+
+        # Inline evaluation
+        eval_result = None
+        if evaluate and self._generator:
+            eval_result = await self._run_inline_evaluation(
+                query, answer, context_docs,
+            )
+
+        # Pipeline version
+        pipeline_version = self._get_pipeline_version()
+
+        return GenerateResponse(
+            answer=answer,
+            sources=[d.to_dict() for d in retrieval_result.documents],
+            retrieval=retrieval_result.to_dict(),
+            generation=gen_result.to_dict(),
+            trace_id=retrieval_result.trace_id,
+            pipeline_version=pipeline_version,
+            evaluation=eval_result,
+        )
 
     async def stream(
         self,
@@ -530,13 +682,25 @@ class GlassBoxEngine:
             },
         )
 
-        # Stream LLM tokens
+        # Stream LLM tokens with trace step
+        gen_step = self.trace_tracker.start_step(
+            "generate",
+            input_data={"query": query, "num_context_docs": len(context_docs)},
+        )
+        token_count = 0
         async for event in self._generator.stream(
             query, context_docs,
             system_prompt=system_prompt,
             temperature=temperature,
             max_tokens=max_tokens,
         ):
+            if event.type == "token":
+                token_count += 1
+            elif event.type == "done":
+                self.trace_tracker.end_step(gen_step.step_id, output_data={
+                    "tokens_streamed": token_count,
+                    "model": event.metadata.get("model") if event.metadata else None,
+                })
             yield event
 
     async def _ensure_generator(self) -> None:
@@ -544,50 +708,55 @@ class GlassBoxEngine:
         if self._generator is not None:
             return
 
-        from glassbox_rag.core.generator import LLMGenerator, GenerationConfig
+        async with self._generator_lock:
+            # Double-check after acquiring lock
+            if self._generator is not None:
+                return
 
-        gen_cfg = self.config.generation
-        backend_type = gen_cfg.backend
-        backend_config: dict[str, Any] = {}
+            from glassbox_rag.core.generator import LLMGenerator, GenerationConfig
 
-        # Config-driven (preferred)
-        if backend_type and gen_cfg.api_key:
-            backend_config["api_key"] = gen_cfg.api_key.get_secret_value()
-            backend_config["model"] = gen_cfg.model
-            if gen_cfg.base_url:
-                backend_config["base_url"] = gen_cfg.base_url
-        elif backend_type == "ollama":
-            backend_config["base_url"] = gen_cfg.base_url or "http://localhost:11434"
-            backend_config["model"] = gen_cfg.model
-        else:
-            # Fallback: auto-detect from env vars
-            import os
-            if os.getenv("OPENAI_API_KEY"):
-                backend_type = "openai"
-                backend_config["api_key"] = os.environ["OPENAI_API_KEY"]
-            elif os.getenv("OLLAMA_BASE_URL"):
-                backend_type = "ollama"
-                backend_config["base_url"] = os.environ["OLLAMA_BASE_URL"]
+            gen_cfg = self.config.generation
+            backend_type = gen_cfg.backend
+            backend_config: dict[str, Any] = {}
+
+            # Config-driven (preferred)
+            if backend_type and gen_cfg.api_key:
+                backend_config["api_key"] = gen_cfg.api_key.get_secret_value()
+                backend_config["model"] = gen_cfg.model
+                if gen_cfg.base_url:
+                    backend_config["base_url"] = gen_cfg.base_url
+            elif backend_type == "ollama":
+                backend_config["base_url"] = gen_cfg.base_url or "http://localhost:11434"
+                backend_config["model"] = gen_cfg.model
             else:
-                raise EngineError(
-                    "No LLM backend configured for generation. "
-                    "Set 'generation.backend' in config, or set "
-                    "OPENAI_API_KEY / OLLAMA_BASE_URL environment variable."
-                )
+                # Fallback: auto-detect from env vars
+                import os
+                if os.getenv("OPENAI_API_KEY"):
+                    backend_type = "openai"
+                    backend_config["api_key"] = os.environ["OPENAI_API_KEY"]
+                elif os.getenv("OLLAMA_BASE_URL"):
+                    backend_type = "ollama"
+                    backend_config["base_url"] = os.environ["OLLAMA_BASE_URL"]
+                else:
+                    raise EngineError(
+                        "No LLM backend configured for generation. "
+                        "Set 'generation.backend' in config, or set "
+                        "OPENAI_API_KEY / OLLAMA_BASE_URL environment variable."
+                    )
 
-        generation_config = GenerationConfig(
-            model=gen_cfg.model,
-            temperature=gen_cfg.temperature,
-            max_tokens=gen_cfg.max_tokens,
-            system_prompt=gen_cfg.system_prompt,
-        )
+            generation_config = GenerationConfig(
+                model=gen_cfg.model,
+                temperature=gen_cfg.temperature,
+                max_tokens=gen_cfg.max_tokens,
+                system_prompt=gen_cfg.system_prompt,
+            )
 
-        self._generator = LLMGenerator(
-            backend_type=backend_type,
-            backend_config=backend_config,
-            generation_config=generation_config,
-        )
-        await self._generator.initialize()
+            self._generator = LLMGenerator(
+                backend_type=backend_type,
+                backend_config=backend_config,
+                generation_config=generation_config,
+            )
+            await self._generator.initialize()
 
     # ── Ingest ────────────────────────────────────────────────────
 
@@ -621,44 +790,46 @@ class GlassBoxEngine:
         )
 
         try:
-            # Step 0: Multimodal extraction (if needed)
+            # Step 0: Multimodal extraction (if needed) — run concurrently
             extract_step = self.trace_tracker.start_step("extract_content")
             text_docs: list[dict[str, Any]] = []
 
-            for i, doc in enumerate(documents):
+            async def _extract_doc(i: int, doc: dict[str, Any]) -> list[dict[str, Any]]:
                 content_type = doc.get("content_type", "text")
-
                 if content_type != "text":
-                    # Multimodal — extract text
                     mm_content = MultimodalContent(
                         content_type=content_type,
                         content=doc.get("content", ""),
                         metadata=doc.get("metadata", {}),
                     )
                     extracted_texts = await self.multimodal_handler.process(mm_content)
-                    for text in extracted_texts:
-                        text_docs.append({
-                            "content": text,
-                            "metadata": {
-                                **doc.get("metadata", {}),
-                                "source_type": content_type,
-                            },
-                        })
+                    return [{
+                        "content": text,
+                        "metadata": {
+                            **doc.get("metadata", {}),
+                            "source_type": content_type,
+                        },
+                    } for text in extracted_texts]
                 else:
                     content = doc.get("content", "")
                     if isinstance(content, str) and content.strip():
-                        text_docs.append(doc)
+                        return [doc]
                     elif not isinstance(content, str):
-                        # Might be bytes
-                        text_docs.append({
+                        return [{
                             "content": content.decode("utf-8", errors="replace")
                             if isinstance(content, bytes) else str(content),
                             "metadata": doc.get("metadata", {}),
-                        })
+                        }]
                     else:
                         raise EngineError(
                             f"Document at index {i} is missing 'content' field"
                         )
+
+            # Run all extractions concurrently
+            nested = await asyncio.gather(
+                *[_extract_doc(i, d) for i, d in enumerate(documents)]
+            )
+            text_docs = [doc for group in nested for doc in group]
 
             self.trace_tracker.end_step(extract_step.step_id, output_data={
                 "text_documents": len(text_docs),
@@ -684,6 +855,21 @@ class GlassBoxEngine:
                     all_chunks.append(c)
                     all_texts.append(c.text)
                     all_meta.append(c.metadata)
+
+            # Lineage enrichment (runs at chunker layer, not inline in engine)
+            for doc in text_docs:
+                source_content = doc.get("content", "")
+                doc_meta = doc.get("metadata", {})
+                doc_chunks = [
+                    c for c in all_chunks
+                    if c.metadata.get("source") == doc_meta.get("source", "")
+                ]
+                if doc_chunks:
+                    self._lineage_enricher.enrich(
+                        doc_chunks,
+                        source_content=source_content,
+                        parent_doc_id=doc_meta.get("source", ""),
+                    )
 
             self.metrics_tracker.end_operation(chunk_op)
             self.telemetry.on_operation_complete("chunk", chunk_op.get_latency_ms() / 1000)
@@ -736,6 +922,14 @@ class GlassBoxEngine:
                 if self.vector_store:
                     count = await self.vector_store.count()
                     self.telemetry.prometheus.set_vectors_count(count)
+
+            # POST_INGEST hook (DriftDetector runs here if registered)
+            import numpy as _np
+            await self.hooks.run(HookPoint.POST_INGEST, {
+                "embeddings": _np.array(embeddings) if not isinstance(embeddings, _np.ndarray) else embeddings,
+                "chunk_count": len(all_chunks),
+                "document_ids": doc_ids,
+            })
 
             # Finalize
             self.trace_tracker.end_step(ingest_step.step_id)
@@ -790,6 +984,7 @@ class GlassBoxEngine:
             ]
         ] = None,
         deduplicate: bool = True,
+        max_concurrent_batches: int = 3,
     ) -> dict[str, Any]:
         """
         Async batch ingest with progress reporting.
@@ -827,27 +1022,37 @@ class GlassBoxEngine:
         total_chunks = 0
         total_doc_ids: list[str] = []
 
-        for batch_num in range(total_batches):
-            start = batch_num * batch_size
-            end = min(start + batch_size, len(documents))
-            batch = documents[start:end]
+        # Use semaphore for concurrent batch processing
+        sem = asyncio.Semaphore(max_concurrent_batches)
 
-            result = await self.ingest(batch, encoder=encoder)
+        async def run_batch(batch_num: int, batch: list[dict[str, Any]]) -> dict[str, Any]:
+            async with sem:
+                result = await self.ingest(batch, encoder=encoder)
+                if on_progress:
+                    if inspect.iscoroutinefunction(on_progress):
+                        await on_progress(batch_num + 1, total_batches, result)
+                    else:
+                        on_progress(batch_num + 1, total_batches, result)
+                logger.info(
+                    "Batch %d/%d ingested: %d docs → %d chunks",
+                    batch_num + 1, total_batches,
+                    len(batch), result.get("chunks_created", 0),
+                )
+                return result
+
+        batches = [
+            documents[i:i + batch_size]
+            for i in range(0, len(documents), batch_size)
+        ]
+
+        results = await asyncio.gather(
+            *[run_batch(i, b) for i, b in enumerate(batches)]
+        )
+
+        for result in results:
             all_results.append(result)
             total_chunks += result.get("chunks_created", 0)
             total_doc_ids.extend(result.get("document_ids", []))
-
-            if on_progress:
-                if inspect.iscoroutinefunction(on_progress):
-                    await on_progress(batch_num + 1, total_batches, result)
-                else:
-                    on_progress(batch_num + 1, total_batches, result)
-
-            logger.info(
-                "Batch %d/%d ingested: %d docs → %d chunks",
-                batch_num + 1, total_batches,
-                len(batch), result.get("chunks_created", 0),
-            )
 
         return {
             "success": True,
@@ -940,3 +1145,56 @@ class GlassBoxEngine:
     def get_token_counter(self) -> TokenCounter:
         """Return the engine's token counter."""
         return self.token_counter
+
+    # ── Build Directive v3 helpers ────────────────────────────────
+
+    async def _run_inline_evaluation(
+        self,
+        query: str,
+        answer: str,
+        context_docs: list[str],
+    ) -> InlineEvaluation:
+        """Run inline faithfulness and groundedness scoring."""
+        from glassbox_rag.evaluation.generation import (
+            faithfulness,
+            groundedness,
+            context_relevance,
+        )
+
+        faith_score = 0.0
+        ground_score = 0.0
+        cr_score = 0.0
+
+        try:
+            faith_score = await faithfulness(answer, context_docs, self._generator)
+        except Exception as e:
+            logger.warning("Inline faithfulness eval failed: %s", e)
+
+        try:
+            ground_score = await groundedness(answer, context_docs, self._generator)
+        except Exception as e:
+            logger.warning("Inline groundedness eval failed: %s", e)
+
+        try:
+            cr_score = await context_relevance(query, context_docs, self._generator)
+        except Exception as e:
+            logger.warning("Inline context_relevance eval failed: %s", e)
+
+        return InlineEvaluation(
+            faithfulness=faith_score,
+            groundedness=ground_score,
+            context_relevance=cr_score,
+        )
+
+    def _get_pipeline_version(self) -> int:
+        """Get current pipeline version from .glassbox/versions/."""
+        import json as json_mod
+        current_file = Path(".glassbox/versions/current.json")
+        if current_file.exists():
+            try:
+                data = json_mod.loads(current_file.read_text(encoding="utf-8"))
+                return data.get("version", 0)
+            except Exception:
+                pass
+        return 0
+
