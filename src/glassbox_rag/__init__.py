@@ -14,7 +14,7 @@ Public API:
     from glassbox_rag import LineageEnricher, DriftDetector, FreshnessValidator
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from glassbox_rag.config import GlassBoxConfig, load_config
 from glassbox_rag.core.engine import GlassBoxEngine

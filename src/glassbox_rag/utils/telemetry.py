@@ -208,8 +208,9 @@ class PrometheusMetrics:
             )
             return
 
+        from glassbox_rag import __version__
         self.info = Info("glassbox", "GlassBox RAG framework info")
-        self.info.info({"version": "0.4.0"})
+        self.info.info({"version": __version__})
 
         self.requests_total = Counter(
             "glassbox_requests_total",
